@@ -1,0 +1,128 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Surrey Community Food Bank · Database</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--g:#1e6b52;--g2:#e8f3ee;--ink:#17202b;--mut:#667085;--line:#e6e8ec;--bg:#f5f6f8;--red:#c0362c;--redbg:#fdecea;--amb:#a15c07;--ambbg:#fef4e6;--blue:#2457a6;--bluebg:#eaf1fb}
+*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,sans-serif;background:var(--bg);color:var(--ink);font-size:14px}
+.app{display:flex;min-height:100vh}
+aside{width:232px;background:#12352a;color:#d6e6df;padding:20px 12px;position:sticky;top:0;height:100vh;flex-shrink:0;overflow:auto}
+aside h1{font-size:15px;color:#fff;margin:0 8px 2px}aside .sub{font-size:12px;opacity:.65;margin:0 8px 18px}
+aside .grp{font-size:11px;text-transform:uppercase;letter-spacing:.06em;opacity:.5;margin:16px 8px 6px}
+aside a{display:flex;justify-content:space-between;padding:8px 10px;border-radius:7px;color:inherit;text-decoration:none;cursor:pointer}
+aside a:hover{background:#1b4a3b}aside a.on{background:#2b6b55;color:#fff}aside a small{opacity:.6}
+main{flex:1;padding:26px 30px;min-width:0}
+h2{margin:0 0 4px;font-size:22px}.lead{color:var(--mut);margin:0 0 18px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;margin-bottom:22px}
+.card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px 16px}.card b{display:block;font-size:26px;margin-top:4px}.card span{color:var(--mut);font-size:12.5px}
+.card.warn b{color:var(--red)}
+.flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr auto 1fr;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:18px;margin-bottom:22px}
+.flow div.n{background:var(--g2);border-radius:8px;padding:12px;text-align:center;font-weight:600}.flow div.n small{display:block;font-weight:400;color:var(--mut);margin-top:3px}.flow .ar{color:var(--g);font-size:20px}
+.tools{display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+input,select{font:inherit;padding:8px 11px;border:1px solid #d0d5dd;border-radius:8px;background:#fff}input{width:280px}
+.cnt{color:var(--mut);font-size:13px;margin-left:auto}
+.tbl{background:#fff;border:1px solid var(--line);border-radius:10px;overflow:auto;max-height:calc(100vh - 210px)}
+table{border-collapse:collapse;width:100%}th{position:sticky;top:0;background:#f9fafb;text-align:left;font-weight:600;font-size:12.5px;color:#475467;padding:10px 12px;border-bottom:1px solid var(--line);cursor:pointer;white-space:nowrap;user-select:none}
+td{padding:10px 12px;border-bottom:1px solid #f0f1f3;vertical-align:top}tr:hover td{background:#fafbfc}
+.pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:500;white-space:nowrap;background:#f2f4f7;color:#344054}
+.p-HIGH,.p-EXPIRED,.p-Missed,.p-Failed{background:var(--redbg);color:var(--red)}.p-Delayed,.p-Pending,.p-Template,.p-Scheduled,.p-Upcoming{background:var(--ambbg);color:var(--amb)}
+.p-Fulfilled,.p-Approved,.p-Sent,.p-OK{background:var(--g2);color:var(--g)}.p-Business,.p-Organization,.p-Automatic{background:var(--bluebg);color:var(--blue)}.p-Muse{background:#f1ecfd;color:#5b3fb5}
+.who{font-weight:600}.role{font-size:12px;color:var(--mut)}.arrow{color:var(--g);font-weight:700;padding:0 6px}
+.items{color:#475467;font-size:12.5px;line-height:1.55}.more{color:var(--g);cursor:pointer;font-size:12.5px}
+.neg{color:var(--red);font-weight:600}.soon{color:var(--amb);font-weight:600}
+.mail{white-space:pre-wrap;background:#f9fafb;border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12.5px;margin-top:6px;display:none}
+.btn{font:inherit;font-weight:600;border:0;border-radius:8px;padding:10px 16px;cursor:pointer;background:var(--g);color:#fff}.btn.sec{background:#fff;color:var(--g);border:1px solid var(--g)}.btn:disabled{opacity:.55;cursor:wait}
+.panel{background:#fff;border:1px solid var(--line);border-radius:10px;padding:18px;margin-bottom:16px}.panel h3{margin:0 0 4px;font-size:15px}.panel p.role{margin:0 0 12px}
+.out{white-space:pre-wrap;background:#f9fafb;border:1px solid var(--line);border-radius:8px;padding:12px;font-size:13px;line-height:1.55;margin-top:12px;min-height:44px;color:#344054}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.row input{flex:1;min-width:240px}.badge{font-size:12px;padding:3px 9px;border-radius:99px;background:var(--g2);color:var(--g);font-weight:600}.badge.off{background:var(--ambbg);color:var(--amb)}
+.demo{background:#fff8eb;border:1px solid #f5d9a8;color:#7a4b00;border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:13px}.demo b{color:#5c3800}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media(max-width:1000px){.grid2{grid-template-columns:1fr}}
+input[type=date]{width:auto}select.wide{max-width:420px;width:100%}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.chip{font-size:12.5px;border:1px solid #d0d5dd;background:#fff;border-radius:99px;padding:5px 10px;cursor:pointer}
+@media(max-width:800px){aside{display:none}main{padding:16px}.flow{grid-template-columns:1fr}.flow .ar{transform:rotate(90deg);text-align:center}}
+</style></head><body><div class="app">
+<aside><h1>Surrey Community Food Bank</h1><p class="sub">Database viewer · live</p><div id="nav"></div></aside>
+<main id="m"></main></div>
+<script>
+let D=null;
+const esc=v=>v==null?'':String(v).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const pill=v=>v==null||v===''?'':`<span class="pill p-${esc(String(v).split(' ')[0])}">${esc(v)}</span>`;
+const PILLS=['Risk','Status','Type','Role','Written By','Mode','When'];
+const fmtItems=(s,id)=>{if(!s)return '<span class="role">No items</span>';const a=s.split('||');const first=a.slice(0,3).map(esc).join('<br>');
+ return `<div class="items">${first}${a.length>3?`<span id="x${id}" style="display:none"><br>${a.slice(3).map(esc).join('<br>')}</span><br><span class="more" onclick="document.getElementById('x${id}').style.display='inline';this.remove()">+ ${a.length-3} more</span>`:''}</div>`};
+const S=[
+ {k:'overview',t:'Overview',g:'Dashboard'},
+ {k:'donations',t:'Donations in',g:'Food flow',lead:'Who donated the food, and which volunteer collected it from them.'},
+ {k:'hampers',t:'Hampers out',g:'Food flow',lead:'Which volunteer gave a hamper, and which recipient received the free food.'},
+ {k:'inventory',t:'Inventory',g:'Food flow',lead:'Food currently in stock. Items flagged HIGH risk by the AI (3 days or less) are pinned to the top.'},
+ {k:'expiry',t:'Expiry section',g:'Food flow',lead:'Expired items removed from inventory. This feeds the Inventory Waste report.'},
+ {k:'coordinators',t:'Coordinators',g:'People',lead:'Coordinators manage the system and receive every AI alert email.'},
+ {k:'donors',t:'Donors',g:'People',lead:'People and businesses who give food.'},
+ {k:'recipients',t:'Recipients',g:'People',lead:'Households who receive free hampers.'},
+ {k:'volunteers',t:'Volunteers',g:'People',lead:'Our team. Volunteers collect donations and hand out hampers.'},
+ {k:'shifts',t:'Shifts',g:'People',lead:'Shifts created by the coordinator, with assigned volunteers.'},
+ {k:'ai',t:'AI assistant',g:'Automation'},
+ {k:'emails',t:'AI alert emails',g:'Automation',lead:'Alert emails sent to the coordinators (Harsh and AJ). Click a row to read the email.'},
+ {k:'categories',t:'Categories',g:'Admin',lead:'Inventory categories managed by the coordinator.'}];
+let cur=location.hash.slice(1)||'overview',sk=null,asc=true;
+function nav(){let g='',h='';S.forEach(s=>{if(s.g!==g){g=s.g;h+=`<div class="grp">${g}</div>`}
+ const n=Array.isArray(D[s.k])?`<small>${D[s.k].length}</small>`:'';h+=`<a class="${s.k==cur?'on':''}" onclick="go('${s.k}')">${s.t}${n}</a>`});document.getElementById('nav').innerHTML=h}
+function go(k){cur=k;sk=null;try{history.replaceState(null,'','#'+k)}catch(e){}render()}
+function overview(){const s=D.stats;const c=(n,l,w)=>`<div class="card ${w||''}"><span>${l}</span><b>${n}</b></div>`;
+ return `<h2>Overview</h2><p class="lead">Snapshot generated ${D.generated}.</p>
+ <div class="flow"><div class="n">Donor<small>gives food</small></div><div class="ar">→</div><div class="n">Volunteer<small>collects & logs it</small></div><div class="ar">→</div>
+ <div class="n">Inventory<small>AI checks expiry every 6 h</small></div><div class="ar">→</div><div class="n">Recipient<small>gets a free hamper</small></div></div>
+ <div class="cards">${c(s.donors,'Donors')}${c(s.donations,'Donations received')}${c(s.instock,'Items in stock')}${c(s.highrisk,'High-risk items (≤3 days)','warn')}${s.pending?c(s.pending,'Expired, waiting for AI removal','warn'):''}
+ ${c(s.expired,'Expired & removed','warn')}${c(s.hampers,'Hampers given out')}${c(s.recipients,'Approved recipients')}${c(s.volunteers,'Volunteers')}${c(s.coordinators,'Coordinators')}${c(s.emails,'AI alert emails')}</div>
+ <h2 style="font-size:16px;margin-bottom:10px">Stock by category</h2>${table(D.categories,'categories',true)}`}
+function aiPage(){const a=D.ai;return `<h2>AI assistant <span class="badge ${a.muse?'':'off'}">${a.muse?'Muse AI: '+a.muse_status:'Muse AI key missing'}</span> <span class="badge ${a.smtp?'':'off'}">${a.smtp?'Email: sending':'Email: log only'}</span></h2>
+ <p class="lead">Muse AI reads the live tables, flags expiring food, and emails the coordinators. It runs automatically every ${a.every_hours} hours while the app is open, and you can run it any time.</p>
+ <div class="panel"><h3>Demo controls</h3><p class="role">For the presentation: pretend it's a later date, or make an item expire, then run the AI check and watch it get removed.</p>
+ <div class="grid2"><div><b style="font-size:13px">Pretend today is</b><div class="row" style="margin-top:6px"><input type="date" id="dd" value="${D.today}"><button class="btn sec" onclick="demo('date',{date:document.getElementById('dd').value})">Set date</button><button class="btn sec" onclick="demo('date',{date:null})">Use real date</button></div></div>
+ <div><b style="font-size:13px">Change an item's expiry date</b><div class="row" style="margin-top:6px"><select id="di" class="wide">${D.items.map(i=>`<option value="${i.id}">${esc(i.label)}</option>`).join('')}</select><input type="date" id="de" value="${D.today}"><button class="btn sec" onclick="demo('expiry',{item_id:document.getElementById('di').value,date:document.getElementById('de').value})">Save</button></div></div></div>
+ <div class="row" style="margin-top:12px"><button class="btn sec" onclick="if(window.confirmReset){demo('reset',{})}else{window.confirmReset=1;this.textContent='Click again to reset all test data'}">Reset all test data</button><span class="role" id="demoo"></span></div></div>
+ <div class="panel"><h3>1. Expiry & pickup check</h3><p class="role">Moves expired food to the expiry section, flags items with 3 days or less left, marks late pickups, and emails Harsh and AJ (harsh.rana1@student.kpu.ca, ajit.thapa@student.kpu.ca).
+ Last run: ${a.last_run||'not yet this session'} · Next automatic run: ${a.next_run||'—'}</p>
+ <button class="btn" id="runb" onclick="runAI()">Run AI check now</button><div class="out" id="runo">Results will show here.</div></div>
+ <div class="panel"><h3>2. Inventory insight report</h3><p class="role">Shelf-life trends, what to use first, and hamper suggestions that respect each recipient's dietary needs.</p>
+ <button class="btn sec" id="insb" onclick="ask()">Generate report</button><div class="out" id="inso">The report will show here.</div></div>
+ <div class="panel"><h3>3. Ask Muse about the data</h3><p class="role">Ask a question in plain English. Muse answers using only the live database.</p>
+ <div class="row"><input id="askq" placeholder="e.g. Which category is wasting the most food?" onkeydown="if(event.key==='Enter')ask(this.value)"><button class="btn sec" onclick="ask(document.getElementById('askq').value)">Ask</button></div>
+ <div class="chips">${['What should go in the next hamper for Emily Chen?','Which donor gives the most perishable food?','How many items expire this week?'].map(q=>`<span class="chip" onclick="document.getElementById('askq').value=this.textContent;ask(this.textContent)">${q}</span>`).join('')}</div>
+ <div class="out" id="asko">Answers will show here.</div></div>`}
+async function demo(kind,body){const o=document.getElementById('demoo');o.textContent='Working...';
+ try{const r=await fetch('/api/demo/'+kind,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const j=await r.json();
+ const d=await fetch('/api/data');D=await d.json();window.confirmReset=0;render();document.getElementById('demoo').textContent=j.msg}catch(e){o.textContent='Failed: '+e}}
+async function runAI(){if(window.__EMBED__){document.getElementById('runo').textContent='This is the online preview. Run the app locally (python app.py) to use Muse AI.';return}const b=document.getElementById('runb'),o=document.getElementById('runo');b.disabled=true;o.textContent='Running the AI check...';
+ try{const r=await fetch('/api/ai/run',{method:'POST'});const j=await r.json();const msg=j.log.join('\n');const d=await fetch('/api/data');D=await d.json();render();document.getElementById('runo').textContent=msg}
+ catch(e){o.textContent='Could not run the check: '+e}b.disabled=false}
+async function ask(q){if(window.__EMBED__){const isQ0=typeof q==='string';document.getElementById(isQ0?'asko':'inso').textContent='This is the online preview. Run the app locally (python app.py) to use Muse AI.';return}const isQ=typeof q==='string';if(isQ&&!q.trim())return;const o=document.getElementById(isQ?'asko':'inso');const b=document.getElementById('insb');
+ o.textContent='Muse AI is reading the database...';if(!isQ)b.disabled=true;
+ try{const r=await fetch('/api/ai/insights',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(isQ?{question:q}:{})});const j=await r.json();o.textContent=j.text}
+ catch(e){o.textContent='Could not reach the server: '+e}if(!isQ)b.disabled=false}
+function rowsFor(k){const q=(document.getElementById('q')||{}).value?.toLowerCase()||'';const f=(document.getElementById('f')||{}).value||'';
+ let r=D[k].filter(x=>(!q||Object.values(x).join(' ').toLowerCase().includes(q))&&(!f||Object.values(x).includes(f)||Object.values(x).map(String).includes(f)));
+ if(sk){r=[...r].sort((a,b)=>{let x=a[sk],y=b[sk];if(typeof x==='number'&&typeof y==='number')return(x-y)*(asc?1:-1);return String(x??'').localeCompare(String(y??''),undefined,{numeric:true})*(asc?1:-1)})}return r}
+function table(rows,k,plain){
+ if(k==='donations'){return `<div class="tbl"><table><tr><th>Date</th><th>Donor (gives)</th><th></th><th>Collected by (volunteer)</th><th>Items donated</th></tr>${rows.map(r=>`<tr><td style="white-space:nowrap">${esc(r.date)}<div class="role">Donation #${r.id}</div></td>
+  <td><div class="who">${esc(r.donor)}</div>${pill(r.type)}</td><td class="arrow">→</td><td><div class="who">${esc(r.collected||'—')}</div><div class="role">Volunteer</div></td><td>${fmtItems(r.items,'d'+r.id)}<div class="role">${r.n} item lines</div></td></tr>`).join('')}</table></div>`}
+ if(k==='hampers'){return `<div class="tbl"><table><tr><th>Pickup</th><th>Given by (volunteer)</th><th></th><th>Received by (recipient)</th><th>Hamper contents</th><th>Status</th></tr>${rows.map(r=>`<tr><td style="white-space:nowrap">${esc(r.date)}<div class="role">Hamper #${r.id}</div></td>
+  <td><div class="who">${esc(r.given||'—')}</div><div class="role">Volunteer</div></td><td class="arrow">→</td><td><div class="who">${esc(r.recipient)}</div><div class="role">Household of ${r.hh} · ${esc(r.prefs)}</div></td><td>${fmtItems(r.items,'h'+r.id)}</td><td>${pill(r.status)}</td></tr>`).join('')}</table></div>`}
+ const cols=Object.keys(rows[0]||{}).filter(c=>c!=='body');
+ return `<div class="tbl"><table><tr>${cols.map(c=>`<th ${plain?'':`onclick="srt('${c}')"`}>${esc(c)}${sk==c?(asc?' ▲':' ▼'):''}</th>`).join('')}</tr>${rows.map((r,i)=>`<tr ${k==='emails'?`style="cursor:pointer" onclick="const m=document.getElementById('mb${i}');m.style.display=m.style.display=='block'?'none':'block'"`:''}>${cols.map((c,j)=>{let v=r[c];
+  if(PILLS.includes(c))return `<td>${pill(v)}</td>`;
+  if(c==='DaysLeft')return `<td class="${v<=3?'neg':v<=7?'soon':''}">${v<0?'Expired '+(-v)+' day'+(v==-1?'':'s')+' ago':v+' day'+(v==1?'':'s')}</td>`;
+  if(k==='emails'&&c==='Subject')return `<td>${esc(v)}<div class="mail" id="mb${i}">${esc(r.body)}</div></td>`;
+  return `<td>${j==1&&k!=='emails'?`<b>${esc(v)}</b>`:esc(v)}</td>`}).join('')}</tr>`).join('')}</table></div>`}
+function filterFor(k){const m={inventory:'Category',expiry:'Category',hampers:'status',shifts:'When',emails:'Written By',donors:'Type'}[k];if(!m)return'';
+ const vals=[...new Set(D[k].map(r=>r[m]).filter(Boolean))].sort();return `<select id="f" onchange="draw()"><option value="">All ${m.toLowerCase()==='status'?'statuses':m.toLowerCase()+'s'}</option>${vals.map(v=>`<option>${esc(v)}</option>`).join('')}</select>`}
+function render(){nav();const s=S.find(x=>x.k==cur)||S[0];const m=document.getElementById('m');
+ const banner=D.demo_date?`<div class="demo">Demo mode: the system thinks today is <b>${D.demo_date}</b>. Days left, expiry and alerts use this date. <a href="#ai" onclick="go('ai')">Change it</a></div>`:'';
+ if(s.k==='overview'){m.innerHTML=banner+overview();return}
+ if(s.k==='ai'){m.innerHTML=banner+aiPage();return}
+ m.innerHTML=banner+`<h2>${s.t}</h2><p class="lead">${s.lead}</p><div class="tools"><input id="q" placeholder="Search ${s.t.toLowerCase()}..." oninput="draw()">${filterFor(s.k)}<span class="cnt" id="cnt"></span></div><div id="tb"></div>`;draw()}
+function draw(){const r=rowsFor(cur);document.getElementById('tb').innerHTML=r.length?table(r,cur):'<div class="tbl" style="padding:30px;text-align:center;color:#667085">No records found.</div>';document.getElementById('cnt').textContent=r.length+' rows'}
+function srt(c){asc=sk==c?!asc:true;sk=c;draw()}
+async function load(){if(window.__EMBED__){D=window.__EMBED__;render();return}try{const r=await fetch('/api/data');if(!r.ok)throw new Error(r.status);D=await r.json();render()}
+ catch(e){document.getElementById('m').innerHTML='<h2>Cannot reach the database</h2><p class="lead">Start the server with <b>python app.py</b> and check your MySQL settings in .env.</p>'}}
+window.addEventListener('hashchange',()=>{const k=location.hash.slice(1);if(k&&k!==cur){cur=k;render()}});load();
+</script></body></html>
