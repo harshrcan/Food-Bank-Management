@@ -25,7 +25,7 @@ python app.py
 ```
 Then open http://localhost:5000
 
-In `.env`, fill in your MySQL password and `MUSE_API_KEY`. Never commit `.env` (it is in `.gitignore`).
+In `.env`, fill in your MySQL password and `AI_API_KEY` (free Gemini key from https://aistudio.google.com/apikey). Never commit `.env` (it is in `.gitignore`).
 
 ## API routes (for merging into the main backend)
 | Route | Does |
@@ -36,10 +36,10 @@ In `.env`, fill in your MySQL password and `MUSE_API_KEY`. Never commit `.env` (
 
 ## How the AI works
 - Code decides what is expired, at risk (3 days or less) or late. This keeps the data correct.
-- Muse AI writes the alert emails, the insight report, and answers questions from live table data.
+- The AI (Google Gemini free tier by default; Muse AI also supported) writes the alert emails, the insight report, and answers questions from live table data.
 - Alerts go only to the coordinators (Harsh and AJ) and are saved in `Email_Log`.
 - Runs automatically every 6 hours while `app.py` is running, or on demand with the button.
-- If Muse is unreachable, a built-in template is used so alerts still go out.
+- If the AI is unreachable, a built-in template is used so alerts still go out.
 
 ## Demo controls (AI assistant page)
 - **Pretend today is**: set a demo date. Days left, expiry and alerts all use it.

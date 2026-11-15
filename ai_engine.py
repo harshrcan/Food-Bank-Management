@@ -27,14 +27,20 @@ except ImportError:
 DB = dict(host=os.getenv("DB_HOST", "localhost"), user=os.getenv("DB_USER", "root"),
           password=os.getenv("DB_PASS", ""), database=os.getenv("DB_NAME", "foodbank"))
 
-MUSE_API_KEY = os.getenv("MUSE_API_KEY")
-# Meta's own Muse API is tried first, then the AI/ML API provider, so either kind of key works.
-# Set MUSE_API_URL / MUSE_MODEL in .env to force one.
+# Any OpenAI-compatible AI service works. Set AI_API_KEY / AI_API_URL / AI_MODEL in .env
+# (the older MUSE_* names still work). Default: Google Gemini free tier.
+MUSE_API_KEY = os.getenv("AI_API_KEY") or os.getenv("MUSE_API_KEY")
+_url = os.getenv("AI_API_URL") or os.getenv("MUSE_API_URL")
+_model = os.getenv("AI_MODEL") or os.getenv("MUSE_MODEL")
+GEMINI = ("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", "gemini-2.5-flash")
 PROVIDERS = []
-if os.getenv("MUSE_API_URL"):
-    PROVIDERS.append((os.getenv("MUSE_API_URL"), os.getenv("MUSE_MODEL", "muse-spark-1.3")))
+if _url:
+    PROVIDERS.append((_url, _model or GEMINI[1]))
+if MUSE_API_KEY and MUSE_API_KEY.startswith("AIza"):      # Google keys start with AIza
+    PROVIDERS.append(GEMINI)
 PROVIDERS += [("https://api.meta.ai/v1/chat/completions", "muse-spark-1.3"),
               ("https://api.aimlapi.com/v1/chat/completions", "meta/muse-spark-1.3")]
+PROVIDERS = list(dict.fromkeys(PROVIDERS))
 _working = {}   # remembers which provider worked
 
 SMTP_HOST = os.getenv("SMTP_HOST")
@@ -90,7 +96,7 @@ def muse_enabled():
     return bool(MUSE_API_KEY)
 
 
-def muse_chat(prompt, max_tokens=700):
+def muse_chat(prompt, max_tokens=2000):
     """Send one prompt to Muse AI. Tries each provider until one accepts the key. Raises with a clear reason."""
     order = ([_working["p"]] if "p" in _working else []) + [p for p in PROVIDERS if p != _working.get("p")]
     errors = []
@@ -109,7 +115,7 @@ def muse_chat(prompt, max_tokens=700):
             return r.json()["choices"][0]["message"]["content"].strip()
         except requests.RequestException as e:
             errors.append(f"{url.split('/')[2]}: {e.__class__.__name__}")
-    raise RuntimeError("Muse AI rejected the request. " + " | ".join(errors))
+    raise RuntimeError("The AI service rejected the request. " + " | ".join(errors))
 
 
 def muse_status():
@@ -128,7 +134,7 @@ def muse_email(task, data, log):
         out = json.loads(text[text.find("{"): text.rfind("}") + 1])
         return out["subject"][:250], out["body"]
     except Exception as e:
-        log.append(f"Muse AI unavailable, used template ({e.__class__.__name__})")
+        log.append(f"AI unavailable, used template ({e.__class__.__name__})")
         return None
 
 
@@ -210,7 +216,7 @@ def expiry_check(cur, mode, dry, log):
     ai = muse_email("Write ONE email to the food bank coordinators listing these at-risk items, most urgent first, "
                     "and recommend putting them in the next hampers.", rows, log)
     if ai:
-        subject, body, by = ai[0], ai[1], "Muse AI"
+        subject, body, by = ai[0], ai[1], "AI"
     else:
         by = "Template"
         subject = f"[Food Bank] {len(high)} items expiring within 3 days - priority distribution"
@@ -257,7 +263,7 @@ def pickup_check(cur, mode, dry, log):
         ai = muse_email(f"Tell the coordinators this hamper pickup was {d['Status'].lower()} and suggest "
                         "calling the recipient to reschedule.", data, log)
         if ai:
-            subject, body, by = ai[0], ai[1], "Muse AI"
+            subject, body, by = ai[0], ai[1], "AI"
         else:
             by = "Template"
             subject = f"[Food Bank] Pickup {d['Status'].lower()}: {d['Name']}"
@@ -276,7 +282,7 @@ def run_check(mode="Manual", dry=False):
     d = today(cur)
     log = [f"AI check started ({mode}{', dry run' if dry else ''}) for date {d}"
            + (" (DEMO DATE)" if d != dt.date.today() else ""),
-           "Muse AI: key set" if muse_enabled() else "Muse AI: no API key set, using templates"]
+           "AI: key set" if muse_enabled() else "AI: no API key set, using templates"]
     try:
         res = pickup_check(cur, mode, dry, log)   # first, so items returned from missed pickups get checked too
         res.update(expiry_check(cur, mode, dry, log))
@@ -317,7 +323,7 @@ def data_snapshot(cur):
 
 def basic_report(snap):
     """Backup report from the same data, used when Muse AI can't be reached."""
-    L = [f"Inventory report for {snap['today']} (basic report: Muse AI unavailable)", ""]
+    L = [f"Inventory report for {snap['today']} (basic report: AI unavailable)", ""]
     L.append("Waste by category (most first):")
     L += [f"  {w['category']}: {w['expired_items']} expired items" for w in snap["waste_by_category"]] or ["  none"]
     L += ["", "Use first (expiring within 5 days):"]
@@ -351,9 +357,9 @@ def insights(question=None):
                   "4) One practical tip to reduce waste.\n"
                   f"Data: {json.dumps(snap, default=str)}")
     if not muse_enabled():
-        return {"ok": False, "text": "Muse AI key is missing in .env, so here is the basic report instead.\n\n" + basic_report(snap)}
+        return {"ok": False, "text": "AI key is missing in .env, so here is the basic report instead.\n\n" + basic_report(snap)}
     try:
-        return {"ok": True, "text": muse_chat(prompt, max_tokens=900)}
+        return {"ok": True, "text": muse_chat(prompt, max_tokens=2500)}
     except Exception as e:
         return {"ok": False, "text": f"{e}\n\nShowing the basic report instead:\n\n" + basic_report(snap)}
 

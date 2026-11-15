@@ -5,7 +5,7 @@ Food Bank database viewer + AI assistant (local web app).
   python app.py            then open http://localhost:5000
 
 The page (static/index.html) reads live data from MySQL through /api/data.
-Muse AI is only called from this server, so the API key never reaches the browser.
+The AI service is only called from this server, so the API key never reaches the browser.
 The AI check also runs automatically every 6 hours while the app is running.
 """
 import os, threading, time, decimal, datetime as dt

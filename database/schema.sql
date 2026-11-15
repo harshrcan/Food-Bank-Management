@@ -172,7 +172,7 @@ CREATE TABLE Email_Log (
   To_Email   VARCHAR(255) NOT NULL,
   Subject    VARCHAR(255) NOT NULL,
   Body       TEXT NOT NULL,
-  Written_By ENUM('Muse AI','Template') NOT NULL,   -- Template = fallback if Muse AI is unreachable
+  Written_By ENUM('AI','Muse AI','Template') NOT NULL,   -- Template = fallback if Muse AI is unreachable
   Run_Mode   ENUM('Manual','Automatic') NOT NULL,
   Status     ENUM('Sent','Logged only','Failed') NOT NULL,
   Sent_At    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

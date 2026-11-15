@@ -25,7 +25,7 @@ table{border-collapse:collapse;width:100%}th{position:sticky;top:0;background:#f
 td{padding:10px 12px;border-bottom:1px solid #f0f1f3;vertical-align:top}tr:hover td{background:#fafbfc}
 .pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:500;white-space:nowrap;background:#f2f4f7;color:#344054}
 .p-HIGH,.p-EXPIRED,.p-Missed,.p-Failed{background:var(--redbg);color:var(--red)}.p-Delayed,.p-Pending,.p-Template,.p-Scheduled,.p-Upcoming{background:var(--ambbg);color:var(--amb)}
-.p-Fulfilled,.p-Approved,.p-Sent,.p-OK{background:var(--g2);color:var(--g)}.p-Business,.p-Organization,.p-Automatic{background:var(--bluebg);color:var(--blue)}.p-Muse{background:#f1ecfd;color:#5b3fb5}
+.p-Fulfilled,.p-Approved,.p-Sent,.p-OK{background:var(--g2);color:var(--g)}.p-Business,.p-Organization,.p-Automatic{background:var(--bluebg);color:var(--blue)}.p-AI,.p-Muse{background:#f1ecfd;color:#5b3fb5}
 .who{font-weight:600}.role{font-size:12px;color:var(--mut)}.arrow{color:var(--g);font-weight:700;padding:0 6px}
 .items{color:#475467;font-size:12.5px;line-height:1.55}.more{color:var(--g);cursor:pointer;font-size:12.5px}
 .neg{color:var(--red);font-weight:600}.soon{color:var(--amb);font-weight:600}
@@ -74,8 +74,8 @@ function overview(){const s=D.stats;const c=(n,l,w)=>`<div class="card ${w||''}"
  <div class="cards">${c(s.donors,'Donors')}${c(s.donations,'Donations received')}${c(s.instock,'Items in stock')}${c(s.highrisk,'High-risk items (≤3 days)','warn')}${s.pending?c(s.pending,'Expired, waiting for AI removal','warn'):''}
  ${c(s.expired,'Expired & removed','warn')}${c(s.hampers,'Hampers given out')}${c(s.recipients,'Approved recipients')}${c(s.volunteers,'Volunteers')}${c(s.coordinators,'Coordinators')}${c(s.emails,'AI alert emails')}</div>
  <h2 style="font-size:16px;margin-bottom:10px">Stock by category</h2>${table(D.categories,'categories',true)}`}
-function aiPage(){const a=D.ai;return `<h2>AI assistant <span class="badge ${a.muse?'':'off'}">${a.muse?'Muse AI: '+a.muse_status:'Muse AI key missing'}</span> <span class="badge ${a.smtp?'':'off'}">${a.smtp?'Email: sending':'Email: log only'}</span></h2>
- <p class="lead">Muse AI reads the live tables, flags expiring food, and emails the coordinators. It runs automatically every ${a.every_hours} hours while the app is open, and you can run it any time.</p>
+function aiPage(){const a=D.ai;return `<h2>AI assistant <span class="badge ${a.muse?'':'off'}">${a.muse?'AI: '+a.muse_status:'AI key missing'}</span> <span class="badge ${a.smtp?'':'off'}">${a.smtp?'Email: sending':'Email: log only'}</span></h2>
+ <p class="lead">The AI reads the live tables, flags expiring food, and emails the coordinators. It runs automatically every ${a.every_hours} hours while the app is open, and you can run it any time.</p>
  <div class="panel"><h3>Demo controls</h3><p class="role">For the presentation: pretend it's a later date, or make an item expire, then run the AI check and watch it get removed.</p>
  <div class="grid2"><div><b style="font-size:13px">Pretend today is</b><div class="row" style="margin-top:6px"><input type="date" id="dd" value="${D.today}"><button class="btn sec" onclick="demo('date',{date:document.getElementById('dd').value})">Set date</button><button class="btn sec" onclick="demo('date',{date:null})">Use real date</button></div></div>
  <div><b style="font-size:13px">Change an item's expiry date</b><div class="row" style="margin-top:6px"><select id="di" class="wide">${D.items.map(i=>`<option value="${i.id}">${esc(i.label)}</option>`).join('')}</select><input type="date" id="de" value="${D.today}"><button class="btn sec" onclick="demo('expiry',{item_id:document.getElementById('di').value,date:document.getElementById('de').value})">Save</button></div></div></div>
@@ -85,18 +85,18 @@ function aiPage(){const a=D.ai;return `<h2>AI assistant <span class="badge ${a.m
  <button class="btn" id="runb" onclick="runAI()">Run AI check now</button><div class="out" id="runo">Results will show here.</div></div>
  <div class="panel"><h3>2. Inventory insight report</h3><p class="role">Shelf-life trends, what to use first, and hamper suggestions that respect each recipient's dietary needs.</p>
  <button class="btn sec" id="insb" onclick="ask()">Generate report</button><div class="out" id="inso">The report will show here.</div></div>
- <div class="panel"><h3>3. Ask Muse about the data</h3><p class="role">Ask a question in plain English. Muse answers using only the live database.</p>
+ <div class="panel"><h3>3. Ask the AI about the data</h3><p class="role">Ask a question in plain English. The AI answers using only the live database.</p>
  <div class="row"><input id="askq" placeholder="e.g. Which category is wasting the most food?" onkeydown="if(event.key==='Enter')ask(this.value)"><button class="btn sec" onclick="ask(document.getElementById('askq').value)">Ask</button></div>
  <div class="chips">${['What should go in the next hamper for Emily Chen?','Which donor gives the most perishable food?','How many items expire this week?'].map(q=>`<span class="chip" onclick="document.getElementById('askq').value=this.textContent;ask(this.textContent)">${q}</span>`).join('')}</div>
  <div class="out" id="asko">Answers will show here.</div></div>`}
 async function demo(kind,body){const o=document.getElementById('demoo');o.textContent='Working...';
  try{const r=await fetch('/api/demo/'+kind,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const j=await r.json();
  const d=await fetch('/api/data');D=await d.json();window.confirmReset=0;render();document.getElementById('demoo').textContent=j.msg}catch(e){o.textContent='Failed: '+e}}
-async function runAI(){if(window.__EMBED__){document.getElementById('runo').textContent='This is the online preview. Run the app locally (python app.py) to use Muse AI.';return}const b=document.getElementById('runb'),o=document.getElementById('runo');b.disabled=true;o.textContent='Running the AI check...';
+async function runAI(){if(window.__EMBED__){document.getElementById('runo').textContent='This is the online preview. Run the app locally (python app.py) to use the AI.';return}const b=document.getElementById('runb'),o=document.getElementById('runo');b.disabled=true;o.textContent='Running the AI check...';
  try{const r=await fetch('/api/ai/run',{method:'POST'});const j=await r.json();const msg=j.log.join('\n');const d=await fetch('/api/data');D=await d.json();render();document.getElementById('runo').textContent=msg}
  catch(e){o.textContent='Could not run the check: '+e}b.disabled=false}
-async function ask(q){if(window.__EMBED__){const isQ0=typeof q==='string';document.getElementById(isQ0?'asko':'inso').textContent='This is the online preview. Run the app locally (python app.py) to use Muse AI.';return}const isQ=typeof q==='string';if(isQ&&!q.trim())return;const o=document.getElementById(isQ?'asko':'inso');const b=document.getElementById('insb');
- o.textContent='Muse AI is reading the database...';if(!isQ)b.disabled=true;
+async function ask(q){if(window.__EMBED__){const isQ0=typeof q==='string';document.getElementById(isQ0?'asko':'inso').textContent='This is the online preview. Run the app locally (python app.py) to use the AI.';return}const isQ=typeof q==='string';if(isQ&&!q.trim())return;const o=document.getElementById(isQ?'asko':'inso');const b=document.getElementById('insb');
+ o.textContent='The AI is reading the database...';if(!isQ)b.disabled=true;
  try{const r=await fetch('/api/ai/insights',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(isQ?{question:q}:{})});const j=await r.json();o.textContent=j.text}
  catch(e){o.textContent='Could not reach the server: '+e}if(!isQ)b.disabled=false}
 function rowsFor(k){const q=(document.getElementById('q')||{}).value?.toLowerCase()||'';const f=(document.getElementById('f')||{}).value||'';
