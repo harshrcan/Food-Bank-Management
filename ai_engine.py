@@ -319,6 +319,11 @@ def data_snapshot(cur):
         "waste_by_category": q("""SELECT c.Name category, COUNT(*) expired_items, SUM(e.Quantity) qty
                                   FROM Expiry_Record e JOIN Category c ON c.Category_ID=e.Category_ID
                                   GROUP BY c.Name ORDER BY expired_items DESC"""),
+        "in_stock_items": q("""SELECT i.Name item, c.Name category, i.Quantity qty, i.Unit unit,
+                               DATEDIFF(i.Expiration_Date,CURDATE()) days_left
+                               FROM Inventory_Item i JOIN Category c USING(Category_ID)
+                               WHERE i.Status='Available' AND i.Quantity>0 AND i.Expiration_Date>=CURDATE()
+                               ORDER BY i.Expiration_Date LIMIT 120"""),
         "top_donors": q("""SELECT dn.Name donor, COUNT(DISTINCT d.Donation_ID) donations FROM Donation d
                            JOIN Donor dn USING(Donor_ID) GROUP BY dn.Name ORDER BY donations DESC LIMIT 5"""),
         "recipients": q("""SELECT r.Name, r.Household_Size, r.Food_Preferences,
@@ -356,7 +361,8 @@ def insights(question=None):
         con.close()
     if question:
         prompt = (f"Answer the coordinator's question using ONLY this live data from the food bank database. "
-                  f"If the data does not contain the answer, say so.\nQuestion: {question}\n"
+                  f"For hamper questions, pick specific items from in_stock_items (soonest expiry first) that fit the "
+                  f"recipient's household size and dietary needs, with quantities. If the data truly cannot answer, say so.\nQuestion: {question}\n"
                   f"Data: {json.dumps(snap, default=str)}")
     else:
         prompt = ("Using this live data, write a short inventory insight report for the coordinators with these parts: "
