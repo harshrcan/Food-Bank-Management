@@ -32,12 +32,15 @@ DB = dict(host=os.getenv("DB_HOST", "localhost"), user=os.getenv("DB_USER", "roo
 MUSE_API_KEY = os.getenv("AI_API_KEY") or os.getenv("MUSE_API_KEY")
 _url = os.getenv("AI_API_URL") or os.getenv("MUSE_API_URL")
 _model = os.getenv("AI_MODEL") or os.getenv("MUSE_MODEL")
-GEMINI = ("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", "gemini-2.5-flash")
+_G = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+# Free-tier Gemini models, newest first. If Google retires one, the next is tried automatically.
+GEMINI_MODELS = [(_G, m) for m in ("gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite")]
+GEMINI = GEMINI_MODELS[0]
 PROVIDERS = []
 if _url:
     PROVIDERS.append((_url, _model or GEMINI[1]))
 if MUSE_API_KEY and MUSE_API_KEY.startswith("AIza"):      # Google keys start with AIza
-    PROVIDERS.append(GEMINI)
+    PROVIDERS += GEMINI_MODELS
 PROVIDERS += [("https://api.meta.ai/v1/chat/completions", "muse-spark-1.3"),
               ("https://api.aimlapi.com/v1/chat/completions", "meta/muse-spark-1.3")]
 PROVIDERS = list(dict.fromkeys(PROVIDERS))
@@ -107,8 +110,8 @@ def muse_chat(prompt, max_tokens=2000):
                               json={"model": model, "max_tokens": max_tokens,
                                     "messages": [{"role": "system", "content": SYSTEM},
                                                  {"role": "user", "content": prompt}]})
-            if r.status_code in (401, 403, 404):
-                errors.append(f"{url.split('/')[2]}: {r.status_code} {r.text[:160]}")
+            if r.status_code in (400, 401, 403, 404, 429):
+                errors.append(f"{url.split('/')[2]} ({model}): {r.status_code} {' '.join(r.text.split())[:160]}")
                 continue
             r.raise_for_status()
             _working["p"] = (url, model)
@@ -121,7 +124,7 @@ def muse_chat(prompt, max_tokens=2000):
 def muse_status():
     if not MUSE_API_KEY:
         return "no key"
-    return f"connected via {_working['p'][0].split('/')[2]}" if "p" in _working else "key set"
+    return f"connected ({_working['p'][1]})" if "p" in _working else "key set"
 
 
 def muse_email(task, data, log):
