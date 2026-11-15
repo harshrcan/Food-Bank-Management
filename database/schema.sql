@@ -81,7 +81,8 @@ CREATE TABLE Inventory_Item (
   Item_ID         INT AUTO_INCREMENT PRIMARY KEY,
   Name            VARCHAR(100) NOT NULL,
   Category_ID     INT NOT NULL,
-  Quantity        DECIMAL(10,2) NOT NULL CHECK (Quantity >= 0),
+  Quantity        DECIMAL(10,2) NOT NULL CHECK (Quantity >= 0),          -- what is on the shelf now
+  Original_Quantity DECIMAL(10,2) NOT NULL,                             -- what the donor gave (for reports)
   Unit            VARCHAR(20) NOT NULL,
   Expiration_Date DATE NOT NULL,
   Donation_ID     INT NOT NULL,
@@ -99,6 +100,7 @@ CREATE TABLE Distribution (
   Pickup_Date_Time      DATETIME NOT NULL,
   Status                ENUM('Scheduled','Fulfilled','Missed','Delayed') NOT NULL DEFAULT 'Scheduled',
   Given_By_Volunteer_ID INT NULL,         -- volunteer who handed the hamper to the recipient
+  Shift_ID              INT NULL,         -- distribution shift this pickup belongs to (set when assigned)
   FOREIGN KEY (Recipient_ID) REFERENCES Recipient(Recipient_ID),
   FOREIGN KEY (Given_By_Volunteer_ID) REFERENCES Volunteer(Volunteer_ID) ON DELETE SET NULL
 );
@@ -139,6 +141,8 @@ CREATE TABLE Shift_Assignment (
   FOREIGN KEY (Shift_ID) REFERENCES Shift(Shift_ID) ON DELETE CASCADE,
   FOREIGN KEY (Volunteer_ID) REFERENCES Volunteer(Volunteer_ID) ON DELETE CASCADE
 );
+ALTER TABLE Distribution ADD FOREIGN KEY (Shift_ID) REFERENCES Shift(Shift_ID) ON DELETE SET NULL;
+
 
 -- ---------- EXPIRY + ALERTS ----------
 -- Expiry table: one row per item the AI marks expired (feeds the Waste report)

@@ -15,7 +15,8 @@ import ai_engine, setup_db
 
 app = Flask(__name__, static_folder="static")
 app.json.sort_keys = False      # keep table columns in the order the queries define
-EVERY_HOURS = float(os.getenv("AI_EVERY_HOURS", "6"))
+EVERY_HOURS = float(os.getenv("AI_EVERY_HOURS", "6"))           # full check (expiry + pickups)
+PICKUP_MINUTES = float(os.getenv("PICKUP_CHECK_MINUTES", "15"))  # quick missed/delayed pickup check
 state = {"last_run": None, "next_run": None, "running": False}
 lock = threading.Lock()
 
@@ -68,8 +69,8 @@ QUERIES = {
         IF(s.Start_Time>NOW(),'Upcoming','Done') `When`
         FROM Shift s JOIN Shift_Assignment sa USING(Shift_ID) JOIN Volunteer v USING(Volunteer_ID)
         JOIN Coordinator co USING(Coordinator_ID) GROUP BY s.Shift_ID ORDER BY s.Start_Time DESC""",
-    "emails": """SELECT e.Sent_At Sent, e.To_Email `To`, e.Subject, e.Written_By `Written By`, e.Run_Mode Mode,
-        e.Status, e.Body body FROM Email_Log e ORDER BY e.Email_ID DESC""",
+    "emails": """SELECT e.Sent_At Sent, e.To_Email `To`, ua.Role, e.Subject, e.Written_By `Written By`, e.Run_Mode Mode,
+        e.Status, e.Body body FROM Email_Log e JOIN User_Account ua ON ua.User_ID=e.To_User_ID ORDER BY e.Email_ID DESC""",
     "donors": """SELECT dn.Donor_ID ID, dn.Name, dn.Donor_Type Type, dn.Phone, u.Email,
         COUNT(DISTINCT d.Donation_ID) Donations, COUNT(i.Item_ID) `Items Given`
         FROM Donor dn JOIN User_Account u USING(User_ID) LEFT JOIN Donation d USING(Donor_ID)
@@ -139,7 +140,7 @@ def data():
     out["stats"] = out["stats"][0]
     out["generated"] = dt.datetime.now().strftime("%b %d, %Y %I:%M %p")
     out["ai"] = {"muse": ai_engine.muse_enabled(), "muse_status": ai_engine.muse_status(),
-                 "smtp": ai_engine.smtp_ready(), "every_hours": EVERY_HOURS, **state}
+                 "smtp": ai_engine.smtp_ready(), "every_hours": EVERY_HOURS, "pickup_minutes": PICKUP_MINUTES, **state}
     out["today"] = str(day)
     out["demo_date"] = str(day) if day != dt.date.today() else None
     out["items"] = [{"id": r["ID"], "label": f"#{r['ID']} {r['Item']} (exp {r['Expires']})"} for r in out["inventory"]]
@@ -147,14 +148,15 @@ def data():
     return jsonify(out)
 
 
-def do_run(mode):
+def do_run(mode, pickups_only=False):
     with lock:
         state["running"] = True
         try:
-            res = ai_engine.run_check(mode=mode)
+            res = ai_engine.run_check(mode=mode, pickups_only=pickups_only)
         finally:
             state["running"] = False
-            state["last_run"] = dt.datetime.now().strftime("%b %d, %Y %I:%M %p")
+            if not pickups_only:
+                state["last_run"] = dt.datetime.now().strftime("%b %d, %Y %I:%M %p")
     return res
 
 
@@ -219,37 +221,40 @@ def report():
         return [{c: clean(v) for c, v in r.items()} for r in cur.fetchall()]
     try:
         if kind == "donation":
-            t = q(f"""SELECT COUNT(DISTINCT d.Donation_ID) donations, COUNT(DISTINCT d.Donor_ID) donors, COUNT(i.Item_ID) item_lines
+            t = q(f"""SELECT COUNT(DISTINCT d.Donation_ID) donations, COUNT(DISTINCT d.Donor_ID) donors, COALESCE(SUM(i.Original_Quantity),0) qty
                       FROM Donation d LEFT JOIN Inventory_Item i USING(Donation_ID) WHERE {period('d.Date_Time')}""")[0]
             h = q(f"""SELECT COALESCE(SUM(Status='Fulfilled'),0) fulfilled, COALESCE(SUM(Status IN ('Missed','Delayed')),0) missed,
                       COUNT(DISTINCT IF(Status='Fulfilled',Recipient_ID,NULL)) households
                       FROM Distribution WHERE {period('Pickup_Date_Time')}""")[0]
-            summary = [["Donations received", t["donations"]], ["Active donors", t["donors"]], ["Item lines donated", t["item_lines"]],
-                       ["Hampers given out", h["fulfilled"]], ["Households served", h["households"]],
+            summary = [["Donations received", t["donations"]], ["Total quantity donated", t["qty"]], ["Active donors", t["donors"]],
+                       ["Hampers distributed", h["fulfilled"]], ["Households served", h["households"]],
                        ["Missed or delayed pickups", h["missed"]]]
-            tables = [
-                ["Donations by donor", q(f"""SELECT dn.Name Donor, dn.Donor_Type Type, COUNT(DISTINCT d.Donation_ID) Donations,
+            by_donor = q(f"""SELECT dn.Name Donor, dn.Donor_Type Type, COUNT(DISTINCT d.Donation_ID) Donations,
                     COUNT(i.Item_ID) `Item Lines` FROM Donation d JOIN Donor dn USING(Donor_ID)
                     LEFT JOIN Inventory_Item i USING(Donation_ID) WHERE {period('d.Date_Time')}
-                    GROUP BY dn.Donor_ID ORDER BY `Item Lines` DESC""")],
-                ["Donated food by category", q(f"""SELECT c.Name Category, COUNT(*) `Item Lines` FROM Donation d
+                    GROUP BY dn.Donor_ID ORDER BY `Item Lines` DESC""")
+            tables = [
+                ["Donations received by category (most to least)", q(f"""SELECT c.Name Category,
+                    SUM(i.Original_Quantity) `Total Quantity`, COUNT(*) `Item Lines` FROM Donation d
                     JOIN Inventory_Item i USING(Donation_ID) JOIN Category c USING(Category_ID)
-                    WHERE {period('d.Date_Time')} GROUP BY c.Category_ID ORDER BY `Item Lines` DESC""")],
-                ["Hampers by recipient", q(f"""SELECT r.Name Recipient, r.Household_Size Household,
-                    SUM(ds.Status='Fulfilled') `Hampers Received`, SUM(ds.Status IN ('Missed','Delayed')) `Missed or Delayed`
+                    WHERE {period('d.Date_Time')} GROUP BY c.Category_ID ORDER BY `Total Quantity` DESC""")],
+                ["Missed or delayed pickups by recipient (most to least)", q(f"""SELECT r.Name Recipient,
+                    r.Household_Size Household, SUM(ds.Status IN ('Missed','Delayed')) `Missed or Delayed`,
+                    SUM(ds.Status='Fulfilled') `Hampers Received`
                     FROM Distribution ds JOIN Recipient r USING(Recipient_ID) WHERE {period('ds.Pickup_Date_Time')}
-                    GROUP BY r.Recipient_ID ORDER BY `Hampers Received` DESC""")]]
+                    GROUP BY r.Recipient_ID ORDER BY `Missed or Delayed` DESC, `Hampers Received` DESC""")],
+                ["Donations by donor", by_donor]]
         else:
             t = q(f"SELECT COUNT(*) n, COUNT(DISTINCT Category_ID) cats FROM Expiry_Record WHERE {period('Expired_On')}")[0]
             d = q(f"""SELECT COUNT(*) n FROM Inventory_Item i JOIN Donation d USING(Donation_ID) WHERE {period('d.Date_Time')}""")[0]
             rate = f"{100 * t['n'] / d['n']:.0f}%" if d["n"] else "n/a"
-            summary = [["Expired item lines", t["n"]], ["Categories affected", t["cats"]],
+            summary = [["Expired or wasted items", t["n"]], ["Categories affected", t["cats"]],
                        ["Item lines donated in period", d["n"]], ["Waste rate (expired / donated)", rate]]
             tables = [
-                ["Waste by category", q(f"""SELECT c.Name Category, COUNT(*) `Expired Lines`,
+                ["Expired or wasted items by category (most to least)", q(f"""SELECT c.Name Category, COUNT(*) `Expired Items`, SUM(e.Quantity) `Total Quantity`,
                     CONCAT(ROUND(100*COUNT(*)/(SELECT COUNT(*) FROM Expiry_Record WHERE {period('Expired_On')})),'%') Share
                     FROM Expiry_Record e JOIN Category c ON c.Category_ID=e.Category_ID WHERE {period('e.Expired_On')}
-                    GROUP BY c.Category_ID ORDER BY `Expired Lines` DESC""")],
+                    GROUP BY c.Category_ID ORDER BY `Expired Items` DESC, `Total Quantity` DESC""")],
                 ["Most wasted items", q(f"""SELECT i.Name Item, COUNT(*) `Expired Lines`, SUM(e.Quantity) `Total Qty`, i.Unit
                     FROM Expiry_Record e JOIN Inventory_Item i USING(Item_ID) WHERE {period('e.Expired_On')}
                     GROUP BY i.Name, i.Unit ORDER BY `Expired Lines` DESC, `Total Qty` DESC LIMIT 10""")],
@@ -308,14 +313,19 @@ def demo_reset():
 
 
 def scheduler():
-    """Automatic AI check every EVERY_HOURS while the app is running."""
+    """Runs by itself while the app is open: a quick missed/delayed pickup check every PICKUP_MINUTES
+    (so coordinators hear about a late pickup soon), and the full check every EVERY_HOURS."""
+    next_full = dt.datetime.now() + dt.timedelta(hours=EVERY_HOURS)
     while True:
-        state["next_run"] = (dt.datetime.now() + dt.timedelta(hours=EVERY_HOURS)).strftime("%b %d, %Y %I:%M %p")
-        time.sleep(EVERY_HOURS * 3600)
+        state["next_run"] = next_full.strftime("%b %d, %Y %I:%M %p")
+        time.sleep(PICKUP_MINUTES * 60)
+        full = dt.datetime.now() >= next_full
         try:
-            do_run("Automatic")
+            do_run("Automatic", pickups_only=not full)
         except Exception as e:
-            print("Automatic AI check failed:", e)
+            print("Automatic check failed:", e)
+        if full:
+            next_full = dt.datetime.now() + dt.timedelta(hours=EVERY_HOURS)
 
 
 if __name__ == "__main__":

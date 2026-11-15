@@ -95,7 +95,7 @@ for d in range(24):
         name, cc, unit, qr, er = random.choice([f for f in F if f[1] == cat])
         exp = random.randint(*er) if random.random() > 0.1 else random.randint(-5, -1)
         qty = random.randint(*qr); item += 1; items.append([item, qty, exp, name])
-        o.append(f"INSERT INTO Inventory_Item (Name,Category_ID,Quantity,Unit,Expiration_Date,Donation_ID) VALUES ({q(name)},{cc},{qty},{q(unit)},{D(exp)},{don});")
+        o.append(f"INSERT INTO Inventory_Item (Name,Category_ID,Quantity,Original_Quantity,Unit,Expiration_Date,Donation_ID) VALUES ({q(name)},{cc},{qty},{qty},{q(unit)},{D(exp)},{don});")
 
 # 20 older items that already expired and were removed (the expiry section)
 for k in range(20):
@@ -103,7 +103,7 @@ for k in range(20):
     o.append(f"INSERT INTO Donation (Donor_ID,Date_Time,Collected_By_Volunteer_ID) VALUES ({random.randint(1, 10)},{DT(-back, 11)},{random.randint(1, 3)});")
     name, cc, unit, qr, er = random.choice([f for f in F if f[1] in (2, 3, 4, 6)])
     exp = -back + random.randint(3, 10); qty = random.randint(*qr); item += 1
-    o.append(f"INSERT INTO Inventory_Item (Name,Category_ID,Quantity,Unit,Expiration_Date,Donation_ID,Status) VALUES ({q(name)},{cc},0,{q(unit)},{D(exp)},{don},'Expired');")
+    o.append(f"INSERT INTO Inventory_Item (Name,Category_ID,Quantity,Original_Quantity,Unit,Expiration_Date,Donation_ID,Status) VALUES ({q(name)},{cc},0,{qty},{q(unit)},{D(exp)},{don},'Expired');")
     o.append(f"INSERT INTO Expiry_Record (Item_ID,Quantity,Expired_On,Category_ID,Recorded_At) VALUES ({item},{qty},{D(exp)},{cc},{DT(exp + 1, 6)});")
 
 # shifts: last 3 weeks + this week + next week, each matched to a volunteer's availability

@@ -157,10 +157,20 @@ def coordinators(cur):
     return cur.fetchall()
 
 
-def send_to_coordinators(cur, alert_id, subject, body, written_by, mode, dry, log):
-    for c in coordinators(cur):
+def shift_volunteers(cur, until):
+    """Volunteers assigned to shifts between now and `until` (they can prioritise at-risk food)."""
+    cur.execute(use_demo_dates("""SELECT DISTINCT u.User_ID, u.Email, v.Name FROM Shift s
+                   JOIN Shift_Assignment sa USING (Shift_ID) JOIN Volunteer v USING (Volunteer_ID)
+                   JOIN User_Account u ON u.User_ID = v.User_ID
+                   WHERE u.Is_Active = 1 AND s.End_Time >= NOW() AND s.Start_Time <= %s""", cur), (until,))
+    return cur.fetchall()
+
+
+def send_alert(cur, people, alert_id, subject, body, written_by, mode, dry, log):
+    for c in people:
         status = "Logged only"
-        if smtp_ready() and not dry:
+        real_address = not c["Email"].lower().endswith((".test", ".example", ".invalid"))   # never email fake test accounts
+        if smtp_ready() and real_address and not dry:
             try:
                 msg = EmailMessage()
                 msg["From"], msg["To"], msg["Subject"] = SMTP_USER, c["Email"], subject
@@ -222,17 +232,20 @@ def expiry_check(cur, mode, dry, log):
     rows = sorted([{"item": i["Name"], "category": i["Category"], "qty": f"{i['Quantity']:g} {i['Unit']}",
                     "expires": i["Expiration_Date"], "days_left": i["days_left"]} for i in high],
                   key=lambda r: r["days_left"])
-    ai = muse_email("Write ONE email to the food bank coordinators listing these at-risk items, most urgent first, "
-                    "and recommend putting them in the next hampers.", rows, log)
+    ai = muse_email("Write ONE email to the food bank coordinators and the volunteers on upcoming shifts, listing "
+                    "these at-risk items, most urgent first, and ask for them to go out in the next hampers.", rows, log)
     if ai:
         subject, body, by = ai[0], ai[1], "AI"
     else:
         by = "Template"
         subject = f"[Food Bank] {len(high)} items expiring within 3 days - priority distribution"
-        body = "Hi coordinators,\n\nThese items need to go out in the next hampers:\n\n" + "\n".join(
+        body = "Hi team,\n\nThese items need to go out in the next hampers:\n\n" + "\n".join(
             f"- {r['item']} ({r['qty']}), expires {r['expires']}, {r['days_left']} day(s) left" for r in rows) + \
             "\n\nAutomated alert from the Food Bank system."
-    send_to_coordinators(cur, alert_id, subject, body, by, mode, dry, log)
+    # project requirement: coordinators AND volunteers on upcoming shifts before these items expire
+    until = dt.datetime.combine(max(i["Expiration_Date"] for i in high), dt.time.max)
+    people = {p["User_ID"]: p for p in coordinators(cur) + shift_volunteers(cur, until)}
+    send_alert(cur, list(people.values()), alert_id, subject, body, by, mode, dry, log)
     return {"expired": len(expired), "at_risk": len(high)}
 
 
@@ -288,12 +301,12 @@ def pickup_check(cur, mode, dry, log):
         body = "Hi coordinators,\n\nThese pickups need follow-up:\n\n" + "\n".join(
             f"- {r['recipient']} ({r['phone']}), pickup {r['pickup_time']}: {r['status']}" for r in rows) + \
             "\n\nPlease contact them to reschedule."
-    send_to_coordinators(cur, alert_id, subject, body, by, mode, dry, log)
+    send_alert(cur, coordinators(cur), alert_id, subject, body, by, mode, dry, log)   # coordinators only
     return {"pickup_alerts": len(todo)}
 
 
-def run_check(mode="Manual", dry=False):
-    """One full AI check. Returns a summary dict with a readable log."""
+def run_check(mode="Manual", dry=False, pickups_only=False):
+    """One full check (or only the quick pickup check). Returns a summary dict with a readable log."""
     log_once.clear()
     con = connect()
     cur = con.cursor(dictionary=True, buffered=True)
@@ -303,7 +316,8 @@ def run_check(mode="Manual", dry=False):
            "AI: key set" if muse_enabled() else "AI: no API key set, using templates"]
     try:
         res = pickup_check(cur, mode, dry, log)   # first, so items returned from missed pickups get checked too
-        res.update(expiry_check(cur, mode, dry, log))
+        if not pickups_only:
+            res.update(expiry_check(cur, mode, dry, log))
         if not dry:
             con.commit()
     finally:

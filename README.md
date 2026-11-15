@@ -31,6 +31,7 @@ connection, and tells you what to fix.
 | `ai_engine.py` | Expiry and pickup checks, alert emails, insight report, questions |
 | `static/index.html` | The viewer page (plain HTML + JS, no build step) |
 | `check.py` | Pre-demo checklist |
+| `docs/Food_Bank_DB_and_AI_Explained.pdf` | Plain-English guide: tables, both algorithms, AI, reports, demo script |
 | `run_every_6_hours.bat` | Optional Windows task so the AI check runs even when the app is closed |
 
 ## Test data
@@ -51,14 +52,37 @@ connection, and tells you what to fix.
 
 Errors come back as JSON: `{"ok": false, "error": "plain-English reason"}`.
 
-## How the AI works
+## How the alerts work
 - Code decides what is expired, at risk (3 days or less) or late. This keeps the data correct.
 - The AI writes the alert emails and the insight report, and answers questions from live table data.
-- It works with any OpenAI-compatible service. The default is Google Gemini's free tier
+- **Missed/delayed pickup alerts** go to the coordinators. Pickups are checked every 15 minutes while
+  `app.py` is running.
+- **Expiry risk alerts** go to the coordinators and to volunteers assigned to upcoming shifts before
+  the items expire. The full check runs every 6 hours, or on demand with the button.
+- Every alert is saved in `Email_Log`. Addresses ending in `.test` are never emailed, only logged.
+- It works with any OpenAI-compatible AI service. The default is Google Gemini's free tier
   (5 requests a minute, so leave a few seconds between clicks). Muse AI also works with a paid key.
-- Alerts go only to the coordinators and are saved in `Email_Log`.
-- The check runs automatically every 6 hours while `app.py` is running, or on demand with the button.
 - If the AI is unreachable, a built-in template is used so alerts still go out.
+
+## Project requirements covered by this part (Option 1)
+| Requirement in the project PDF | Where it is |
+|---|---|
+| Four user roles, everyone logs in | `User_Account` + `Donor`, `Recipient`, `Volunteer`, `Coordinator`; `POST /api/login` |
+| Donor: name, phone, email | `Donor`, `User_Account.Email` |
+| Recipient: household size, dietary restrictions, emergency contact, approval | `Recipient` (`Approval_Status`, `Approved_By`) |
+| Volunteer: ID, name, email, phone, profile image, availability | `Volunteer`, `Volunteer_Availability` |
+| Inventory intake from donations, categories | `Donation`, `Inventory_Item`, `Category` |
+| Distribution record: recipient, many items with quantities, date/time | `Distribution`, `Distribution_Item` |
+| Pickup marked fulfilled, missed or delayed | `Distribution.Status` |
+| Shifts and volunteer assignment | `Shift`, `Shift_Assignment`, `Distribution.Shift_ID` |
+| Search donation history by date/category, distributions by recipient/date | Views `Donation_Details`, `Distribution_Details` |
+| Automatic email to coordinators on missed/delayed pickup | `ai_engine.pickup_check` (Algorithm 4) |
+| AI function for at-risk items, alert to coordinators + shift volunteers | `ai_engine.expiry_check` (Algorithm 3) |
+| Report 1: Donation & Distribution Summary, by month or year | `GET /api/report?type=donation` |
+| Report 2: Inventory Waste Summary, by month or year | `GET /api/report?type=waste` |
+
+The screens for each role (register, donate, request a hamper, manage inventory and so on) belong to
+the frontend/backend part of the team and use these tables.
 
 ## Demo flow (AI assistant page)
 1. Click **Reset all test data**.

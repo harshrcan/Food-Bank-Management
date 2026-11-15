@@ -19,7 +19,7 @@ def show(ok, label, fix=""):
         ok_all = False
 
 
-show(True if os.path.exists(".env") else None, ".env file found", "Copy .env.example to .env and fill it in.")
+show(True if os.path.exists(".env") else None, ".env file found" if os.path.exists(".env") else ".env file missing", "Copy .env.example to .env and fill it in.")
 try:
     import ai_engine, setup_db
 except ImportError as e:

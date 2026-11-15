@@ -55,13 +55,13 @@ const S=[
  {k:'hampers',t:'Hampers out',g:'Food flow',lead:'Which volunteer gave a hamper, and which recipient received the free food.'},
  {k:'inventory',t:'Inventory',g:'Food flow',lead:'Food currently in stock, soonest expiry first. HIGH risk means 3 days or less left.'},
  {k:'expiry',t:'Expiry section',g:'Food flow',lead:'Expired items removed from inventory. This feeds the Inventory Waste report.'},
- {k:'coordinators',t:'Coordinators',g:'People',lead:'Coordinators manage the system and receive every AI alert email.'},
+ {k:'coordinators',t:'Coordinators',g:'People',lead:'Coordinators manage the system and receive every alert email.'},
  {k:'donors',t:'Donors',g:'People',lead:'People and businesses who give food.'},
  {k:'recipients',t:'Recipients',g:'People',lead:'Households who receive free hampers.'},
  {k:'volunteers',t:'Volunteers',g:'People',lead:'Our team. Volunteers collect donations and hand out hampers.'},
  {k:'shifts',t:'Shifts',g:'People',lead:'Shifts created by the coordinator, with assigned volunteers.'},
  {k:'ai',t:'AI assistant',g:'Automation'},
- {k:'emails',t:'AI alert emails',g:'Automation',lead:'Alert emails sent to the coordinators (Harsh and AJ). Click a row to read the email.'},
+ {k:'emails',t:'AI alert emails',g:'Automation',lead:'Pickup alerts go to the coordinators. Expiry alerts go to the coordinators and to volunteers on upcoming shifts. Click a row to read the email.'},
  {k:'reports',t:'Reports',g:'Automation'},
  {k:'categories',t:'Categories',g:'Admin',lead:'Inventory categories managed by the coordinator.'},
  {k:'accounts',t:'Logins',g:'Admin',lead:'One login table for every role. Passwords are stored as secure hashes, never as plain text.'}];
@@ -80,12 +80,12 @@ function overview(){const s=D.stats;const c=(n,l,w)=>`<div class="card ${w||''}"
  ${c(s.expired,'Expired & removed','warn')}${c(s.hampers,'Hampers given out')}${c(s.recipients,'Approved recipients')}${c(s.volunteers,'Volunteers')}${c(s.coordinators,'Coordinators')}${c(s.emails,'AI alert emails')}</div>
  <h2 style="font-size:16px;margin-bottom:10px">Stock by category</h2>${table(D.categories,'categories',true)}`}
 function aiPage(){const a=D.ai;return `<h2>AI assistant <span class="badge ${a.muse?'':'off'}">${a.muse?'AI: '+a.muse_status:'AI key missing'}</span> <span class="badge ${a.smtp?'':'off'}">${a.smtp?'Email: sending':'Email: log only'}</span></h2>
- <p class="lead">The AI reads the live tables, flags expiring food, and emails the coordinators. It runs automatically every ${a.every_hours} hours while the app is open, and you can run it any time.</p>
+ <p class="lead">The system flags expiring food and late pickups, and the AI writes the alert emails. While the app is open, pickups are checked every ${a.pickup_minutes} minutes and the full check runs every ${a.every_hours} hours. You can also run it any time.</p>
  <div class="panel"><h3>Demo controls</h3><p class="role">For the presentation: pretend it's a later date, or make an item expire, then run the AI check and watch it get removed.</p>
  <div class="grid2"><div><b style="font-size:13px">Pretend today is</b><div class="row" style="margin-top:6px"><input type="date" id="dd" value="${D.today}"><button class="btn sec" onclick="demo('date',{date:document.getElementById('dd').value})">Set date</button><button class="btn sec" onclick="demo('date',{date:null})">Use real date</button></div></div>
  <div><b style="font-size:13px">Change an item's expiry date</b><div class="row" style="margin-top:6px"><select id="di" class="wide">${D.items.map(i=>`<option value="${i.id}">${esc(i.label)}</option>`).join('')}</select><input type="date" id="de" value="${D.today}"><button class="btn sec" onclick="demo('expiry',{item_id:document.getElementById('di').value,date:document.getElementById('de').value})">Save</button></div></div></div>
  <div class="row" style="margin-top:12px"><button class="btn sec" onclick="if(window.confirmReset){demo('reset',{})}else{window.confirmReset=1;this.textContent='Click again to reset all test data'}">Reset all test data</button><span class="role" id="demoo"></span></div></div>
- <div class="panel"><h3>1. Expiry & pickup check</h3><p class="role">Moves expired food to the expiry section, flags items with 3 days or less left, marks late pickups, and emails Harsh and AJ (harsh.rana1@student.kpu.ca, ajit.thapa@student.kpu.ca).
+ <div class="panel"><h3>1. Expiry & pickup check</h3><p class="role">Moves expired food to the expiry section, flags items with 3 days or less left, marks late pickups, and emails the coordinators (plus volunteers on upcoming shifts for expiry alerts).
  Last run: ${a.last_run||'not yet this session'} · Next automatic run: ${a.next_run||'—'}</p>
  <button class="btn" id="runb" onclick="runAI()">Run AI check now</button><div class="out" id="runo">Results will show here.</div></div>
  <div class="panel"><h3>2. Inventory insight report</h3><p class="role">Shelf-life trends, what to use first, and hamper suggestions that respect each recipient's dietary needs.</p>
