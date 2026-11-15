@@ -105,12 +105,14 @@ def muse_chat(prompt, max_tokens=2000):
     errors = []
     for url, model in order:
         try:
-            r = requests.post(url, timeout=60,
-                              headers={"Authorization": f"Bearer {MUSE_API_KEY}", "Content-Type": "application/json"},
-                              json={"model": model, "max_tokens": max_tokens,
-                                    "messages": [{"role": "system", "content": SYSTEM},
-                                                 {"role": "user", "content": prompt}]})
-            if r.status_code in (400, 401, 403, 404, 429):
+            body = {"model": model, "max_tokens": max_tokens,
+                    "messages": [{"role": "system", "content": SYSTEM},
+                                 {"role": "user", "content": prompt}]}
+            if "googleapis" in url:
+                body["reasoning_effort"] = "low"     # faster answers, fewer timeouts
+            r = requests.post(url, timeout=90, json=body,
+                              headers={"Authorization": f"Bearer {MUSE_API_KEY}", "Content-Type": "application/json"})
+            if r.status_code in (400, 401, 403, 404, 429) or r.status_code >= 500:
                 errors.append(f"{url.split('/')[2]} ({model}): {r.status_code} {' '.join(r.text.split())[:160]}")
                 continue
             r.raise_for_status()
