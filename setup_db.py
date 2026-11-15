@@ -3,8 +3,10 @@ Creates the foodbank database and loads the test data, using the settings in .en
 No mysql command needed.
 
   python setup_db.py
+
+Every test account gets the password  Password123!  (stored as a secure hash, never plain text).
 """
-import os, sys
+import os
 import mysql.connector
 
 try:
@@ -14,6 +16,28 @@ except ImportError:
     pass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+TEST_PASSWORD = "Password123!"
+
+
+def hash_password(pw):
+    """bcrypt if installed (what the schema expects), otherwise Werkzeug's built-in hash."""
+    try:
+        import bcrypt
+        return bcrypt.hashpw(pw.encode(), bcrypt.gensalt(10)).decode()
+    except ImportError:
+        from werkzeug.security import generate_password_hash
+        return generate_password_hash(pw)
+
+
+def check_password(pw, stored):
+    try:
+        if stored.startswith("$2"):
+            import bcrypt
+            return bcrypt.checkpw(pw.encode(), stored.encode())
+        from werkzeug.security import check_password_hash
+        return check_password_hash(stored, pw)
+    except Exception:
+        return False
 
 
 def statements(path):
@@ -29,29 +53,39 @@ def statements(path):
             buf = []
 
 
-def main():
+def main(quiet=False):
+    say = (lambda *a: None) if quiet else print
     try:
         con = mysql.connector.connect(host=os.getenv("DB_HOST", "localhost"), user=os.getenv("DB_USER", "root"),
                                       password=os.getenv("DB_PASS", ""))
     except mysql.connector.Error as e:
-        print("Could not connect to MySQL:", e)
-        print("Check DB_USER and DB_PASS in your .env file.")
-        raise SystemExit(1)
+        raise RuntimeError(f"Could not connect to MySQL: {e}. Is MySQL running? Check DB_USER and DB_PASS in .env.")
     cur = con.cursor()
-    for name in ("schema.sql", "seed_data.sql"):
-        n = 0
-        for st in statements(os.path.join(HERE, "database", name)):
-            cur.execute(st)
-            if cur.with_rows:
-                cur.fetchall()
-            n += 1
+    try:
+        for name in ("schema.sql", "seed_data.sql"):
+            n = 0
+            for st in statements(os.path.join(HERE, "database", name)):
+                cur.execute(st)
+                if cur.with_rows:
+                    cur.fetchall()
+                n += 1
+            con.commit()
+            say(f"Loaded database/{name} ({n} statements)")
+        cur.execute("UPDATE foodbank.User_Account SET Password_Hash=%s", (hash_password(TEST_PASSWORD),))
         con.commit()
-        print(f"Loaded database/{name} ({n} statements)")
-    cur.execute("SELECT COUNT(*) FROM foodbank.Inventory_Item")
-    print(f"Done. foodbank database is ready with {cur.fetchone()[0]} inventory items.")
-    print("Now run: python app.py   and open http://localhost:5000")
-    con.close()
+        cur.execute("SELECT COUNT(*) FROM foodbank.Inventory_Item")
+        items = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM foodbank.User_Account")
+        say(f"Done. foodbank database is ready: {items} inventory items, {cur.fetchone()[0]} test logins "
+            f"(password for all: {TEST_PASSWORD}).")
+        say("Now run: python app.py   and open http://localhost:5000")
+    finally:
+        con.close()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except RuntimeError as e:
+        print(e)
+        raise SystemExit(1)

@@ -25,7 +25,7 @@ table{border-collapse:collapse;width:100%}th{position:sticky;top:0;background:#f
 td{padding:10px 12px;border-bottom:1px solid #f0f1f3;vertical-align:top}tr:hover td{background:#fafbfc}
 .pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:500;white-space:nowrap;background:#f2f4f7;color:#344054}
 .p-HIGH,.p-EXPIRED,.p-Missed,.p-Failed{background:var(--redbg);color:var(--red)}.p-Delayed,.p-Pending,.p-Template,.p-Scheduled,.p-Upcoming{background:var(--ambbg);color:var(--amb)}
-.p-Fulfilled,.p-Approved,.p-Sent,.p-OK{background:var(--g2);color:var(--g)}.p-Business,.p-Organization,.p-Automatic{background:var(--bluebg);color:var(--blue)}.p-AI,.p-Muse{background:#f1ecfd;color:#5b3fb5}
+.p-Fulfilled,.p-Approved,.p-Sent,.p-OK,.p-Active,.p-Coordinator{background:var(--g2);color:var(--g)}.p-Business,.p-Organization,.p-Automatic{background:var(--bluebg);color:var(--blue)}.p-AI,.p-Muse{background:#f1ecfd;color:#5b3fb5}
 .who{font-weight:600}.role{font-size:12px;color:var(--mut)}.arrow{color:var(--g);font-weight:700;padding:0 6px}
 .items{color:#475467;font-size:12.5px;line-height:1.55}.more{color:var(--g);cursor:pointer;font-size:12.5px}
 .neg{color:var(--red);font-weight:600}.soon{color:var(--amb);font-weight:600}
@@ -53,7 +53,7 @@ const S=[
  {k:'overview',t:'Overview',g:'Dashboard'},
  {k:'donations',t:'Donations in',g:'Food flow',lead:'Who donated the food, and which volunteer collected it from them.'},
  {k:'hampers',t:'Hampers out',g:'Food flow',lead:'Which volunteer gave a hamper, and which recipient received the free food.'},
- {k:'inventory',t:'Inventory',g:'Food flow',lead:'Food currently in stock. Items flagged HIGH risk by the AI (3 days or less) are pinned to the top.'},
+ {k:'inventory',t:'Inventory',g:'Food flow',lead:'Food currently in stock, soonest expiry first. HIGH risk means 3 days or less left.'},
  {k:'expiry',t:'Expiry section',g:'Food flow',lead:'Expired items removed from inventory. This feeds the Inventory Waste report.'},
  {k:'coordinators',t:'Coordinators',g:'People',lead:'Coordinators manage the system and receive every AI alert email.'},
  {k:'donors',t:'Donors',g:'People',lead:'People and businesses who give food.'},
@@ -62,7 +62,12 @@ const S=[
  {k:'shifts',t:'Shifts',g:'People',lead:'Shifts created by the coordinator, with assigned volunteers.'},
  {k:'ai',t:'AI assistant',g:'Automation'},
  {k:'emails',t:'AI alert emails',g:'Automation',lead:'Alert emails sent to the coordinators (Harsh and AJ). Click a row to read the email.'},
- {k:'categories',t:'Categories',g:'Admin',lead:'Inventory categories managed by the coordinator.'}];
+ {k:'reports',t:'Reports',g:'Automation'},
+ {k:'categories',t:'Categories',g:'Admin',lead:'Inventory categories managed by the coordinator.'},
+ {k:'accounts',t:'Logins',g:'Admin',lead:'One login table for every role. Passwords are stored as secure hashes, never as plain text.'}];
+const api=async(url,body)=>{const r=await fetch(url,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+ let j;try{j=await r.json()}catch(e){throw new Error('The server did not answer. Is python app.py still running?')}
+ if(!r.ok&&j.error)throw new Error(j.error);return j};
 let cur=location.hash.slice(1)||'overview',sk=null,asc=true;
 function nav(){let g='',h='';S.forEach(s=>{if(s.g!==g){g=s.g;h+=`<div class="grp">${g}</div>`}
  const n=Array.isArray(D[s.k])?`<small>${D[s.k].length}</small>`:'';h+=`<a class="${s.k==cur?'on':''}" onclick="go('${s.k}')">${s.t}${n}</a>`});document.getElementById('nav').innerHTML=h}
@@ -89,16 +94,33 @@ function aiPage(){const a=D.ai;return `<h2>AI assistant <span class="badge ${a.m
  <div class="row"><input id="askq" placeholder="e.g. Which category is wasting the most food?" onkeydown="if(event.key==='Enter')ask(this.value)"><button class="btn sec" onclick="ask(document.getElementById('askq').value)">Ask</button></div>
  <div class="chips">${['What should go in the next hamper for Emily Chen?','Which donor gives the most perishable food?','How many items expire this week?'].map(q=>`<span class="chip" onclick="document.getElementById('askq').value=this.textContent;ask(this.textContent)">${q}</span>`).join('')}</div>
  <div class="out" id="asko">Answers will show here.</div></div>`}
+function simpleTable(rows){if(!rows.length)return '<div class="tbl" style="padding:18px;color:#667085">Nothing in this period.</div>';const cols=Object.keys(rows[0]);
+ return `<div class="tbl" style="max-height:none"><table><tr>${cols.map(c=>`<th style="cursor:default">${esc(c)}</th>`).join('')}</tr>${rows.map(r=>`<tr>${cols.map((c,j)=>`<td>${c==='Type'?pill(r[c]):j==0?`<b>${esc(r[c])}</b>`:esc(r[c])}</td>`).join('')}</tr>`).join('')}</table></div>`}
+function reportsPage(){const [y,mo]=D.today.split('-').map(Number);const M=['January','February','March','April','May','June','July','August','September','October','November','December'];
+ return `<h2>Reports</h2><p class="lead">Two report types, for any month or a whole year. Built from the live tables.</p>
+ <div class="tools"><select id="rt"><option value="donation">Donation & Distribution Summary</option><option value="waste">Inventory Waste Summary</option></select>
+ <select id="rm"><option value="">Whole year</option>${M.map((n,i)=>`<option value="${i+1}" ${i+1==mo?'selected':''}>${n}</option>`).join('')}</select>
+ <input id="ry" type="number" min="2000" max="2100" value="${y}" style="width:100px"><button class="btn" onclick="runReport()">Generate report</button></div><div id="rep"></div>`}
+async function runReport(){const o=document.getElementById('rep');o.innerHTML='<p class="lead">Building the report...</p>';
+ if(window.__EMBED__){o.innerHTML='<p class="lead">Run the app locally (python app.py) to generate reports.</p>';return}
+ try{const j=await api(`/api/report?type=${document.getElementById('rt').value}&year=${document.getElementById('ry').value}&month=${document.getElementById('rm').value}`);
+ o.innerHTML=`<h2 style="font-size:17px;margin:6px 0 12px">${esc(j.title)}</h2><div class="cards">${j.summary.map(x=>`<div class="card"><span>${esc(x[0])}</span><b>${esc(x[1])}</b></div>`).join('')}</div>`+
+ j.tables.map(t=>`<h2 style="font-size:15px;margin:18px 0 8px">${esc(t[0])}</h2>${simpleTable(t[1])}`).join('')}catch(e){o.innerHTML=`<p class="lead">${esc(e.message)}</p>`}}
+function loginBox(){return `<div class="panel"><h3>Test a login</h3><p class="role">Every test account uses the password <b>${esc(D.test_password)}</b>. Click a row's email below, or type one.</p>
+ <div class="row"><input id="le" placeholder="email" autocomplete="off"><input id="lp" type="password" placeholder="password" style="width:180px" onkeydown="if(event.key==='Enter')tryLogin()"><button class="btn sec" onclick="tryLogin()">Check login</button><span class="role" id="lo"></span></div></div>`}
+async function tryLogin(){const o=document.getElementById('lo');o.textContent='Checking...';
+ try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:document.getElementById('le').value,password:document.getElementById('lp').value})});
+ const j=await r.json();o.textContent=j.msg||j.error;if(j.ok){D=await api('/api/data');nav();draw()}}catch(e){o.textContent='Could not reach the server.'}}
 async function demo(kind,body){const o=document.getElementById('demoo');o.textContent='Working...';
- try{const r=await fetch('/api/demo/'+kind,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const j=await r.json();
- const d=await fetch('/api/data');D=await d.json();window.confirmReset=0;render();document.getElementById('demoo').textContent=j.msg}catch(e){o.textContent='Failed: '+e}}
+ try{const j=await api('/api/demo/'+kind,body);D=await api('/api/data');window.confirmReset=0;render();document.getElementById('demoo').textContent=j.msg}
+ catch(e){o.textContent=e.message}}
 async function runAI(){if(window.__EMBED__){document.getElementById('runo').textContent='This is the online preview. Run the app locally (python app.py) to use the AI.';return}const b=document.getElementById('runb'),o=document.getElementById('runo');b.disabled=true;o.textContent='Running the AI check...';
- try{const r=await fetch('/api/ai/run',{method:'POST'});const j=await r.json();const msg=j.log.join('\n');const d=await fetch('/api/data');D=await d.json();render();document.getElementById('runo').textContent=msg}
- catch(e){o.textContent='Could not run the check: '+e}b.disabled=false}
+ try{const j=await api('/api/ai/run',{});const msg=j.log.join('\n');D=await api('/api/data');render();document.getElementById('runo').textContent=msg}
+ catch(e){o.textContent='Could not run the check: '+e.message;b.disabled=false}}
 async function ask(q){if(window.__EMBED__){const isQ0=typeof q==='string';document.getElementById(isQ0?'asko':'inso').textContent='This is the online preview. Run the app locally (python app.py) to use the AI.';return}const isQ=typeof q==='string';if(isQ&&!q.trim())return;const o=document.getElementById(isQ?'asko':'inso');const b=document.getElementById('insb');
  o.textContent='The AI is reading the database...';if(!isQ)b.disabled=true;
- try{const r=await fetch('/api/ai/insights',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(isQ?{question:q}:{})});const j=await r.json();o.textContent=j.text}
- catch(e){o.textContent='Could not reach the server: '+e}if(!isQ)b.disabled=false}
+ try{const j=await api('/api/ai/insights',isQ?{question:q}:{});o.textContent=j.text;if(j.ok&&!D.ai.muse_status.startsWith('connected')){D=await api('/api/data');const bd=document.querySelector('h2 .badge');if(bd)bd.textContent='AI: '+D.ai.muse_status}}
+ catch(e){o.textContent=e.message}if(!isQ)b.disabled=false}
 function rowsFor(k){const q=(document.getElementById('q')||{}).value?.toLowerCase()||'';const f=(document.getElementById('f')||{}).value||'';
  let r=D[k].filter(x=>(!q||Object.values(x).join(' ').toLowerCase().includes(q))&&(!f||Object.values(x).includes(f)||Object.values(x).map(String).includes(f)));
  if(sk){r=[...r].sort((a,b)=>{let x=a[sk],y=b[sk];if(typeof x==='number'&&typeof y==='number')return(x-y)*(asc?1:-1);return String(x??'').localeCompare(String(y??''),undefined,{numeric:true})*(asc?1:-1)})}return r}
@@ -112,17 +134,19 @@ function table(rows,k,plain){
   if(PILLS.includes(c))return `<td>${pill(v)}</td>`;
   if(c==='DaysLeft')return `<td class="${v<=3?'neg':v<=7?'soon':''}">${v<0?'Expired '+(-v)+' day'+(v==-1?'':'s')+' ago':v+' day'+(v==1?'':'s')}</td>`;
   if(k==='emails'&&c==='Subject')return `<td>${esc(v)}<div class="mail" id="mb${i}">${esc(r.body)}</div></td>`;
+  if(k==='accounts'&&c==='Email')return `<td><a href="#accounts" onclick="document.getElementById('le').value=this.textContent;document.getElementById('lp').focus();return false">${esc(v)}</a></td>`;
   return `<td>${j==1&&k!=='emails'?`<b>${esc(v)}</b>`:esc(v)}</td>`}).join('')}</tr>`).join('')}</table></div>`}
-function filterFor(k){const m={inventory:'Category',expiry:'Category',hampers:'status',shifts:'When',emails:'Written By',donors:'Type'}[k];if(!m)return'';
+function filterFor(k){const m={accounts:'Role',inventory:'Category',expiry:'Category',hampers:'status',shifts:'When',emails:'Written By',donors:'Type'}[k];if(!m)return'';
  const vals=[...new Set(D[k].map(r=>r[m]).filter(Boolean))].sort();return `<select id="f" onchange="draw()"><option value="">All ${m.toLowerCase()==='status'?'statuses':m.toLowerCase()+'s'}</option>${vals.map(v=>`<option>${esc(v)}</option>`).join('')}</select>`}
 function render(){nav();const s=S.find(x=>x.k==cur)||S[0];const m=document.getElementById('m');
  const banner=D.demo_date?`<div class="demo">Demo mode: the system thinks today is <b>${D.demo_date}</b>. Days left, expiry and alerts use this date. <a href="#ai" onclick="go('ai')">Change it</a></div>`:'';
  if(s.k==='overview'){m.innerHTML=banner+overview();return}
  if(s.k==='ai'){m.innerHTML=banner+aiPage();return}
- m.innerHTML=banner+`<h2>${s.t}</h2><p class="lead">${s.lead}</p><div class="tools"><input id="q" placeholder="Search ${s.t.toLowerCase()}..." oninput="draw()">${filterFor(s.k)}<span class="cnt" id="cnt"></span></div><div id="tb"></div>`;draw()}
+ if(s.k==='reports'){m.innerHTML=banner+reportsPage();runReport();return}
+ m.innerHTML=banner+`<h2>${s.t}</h2><p class="lead">${s.lead}</p>${s.k==='accounts'?loginBox():''}<div class="tools"><input id="q" placeholder="Search ${s.t.toLowerCase()}..." oninput="draw()">${filterFor(s.k)}<span class="cnt" id="cnt"></span></div><div id="tb"></div>`;draw()}
 function draw(){const r=rowsFor(cur);document.getElementById('tb').innerHTML=r.length?table(r,cur):'<div class="tbl" style="padding:30px;text-align:center;color:#667085">No records found.</div>';document.getElementById('cnt').textContent=r.length+' rows'}
 function srt(c){asc=sk==c?!asc:true;sk=c;draw()}
-async function load(){if(window.__EMBED__){D=window.__EMBED__;render();return}try{const r=await fetch('/api/data');if(!r.ok)throw new Error(r.status);D=await r.json();render()}
- catch(e){document.getElementById('m').innerHTML='<h2>Cannot reach the database</h2><p class="lead">Start the server with <b>python app.py</b> and check your MySQL settings in .env.</p>'}}
+async function load(){if(window.__EMBED__){D=window.__EMBED__;render();return}try{D=await api('/api/data');render()}
+ catch(e){document.getElementById('m').innerHTML=`<h2>Cannot load the data</h2><p class="lead">${esc(e.message)}</p><button class="btn" onclick="load()">Try again</button>`}}
 window.addEventListener('hashchange',()=>{const k=location.hash.slice(1);if(k&&k!==cur){cur=k;render()}});load();
 </script></body></html>

@@ -1,18 +1,19 @@
 """
-AI engine for the Food Bank system (Algorithms 3 and 4), powered by Muse AI.
+AI engine for the Food Bank system (Algorithm 3: expiry risk, Algorithm 4: missed/delayed pickups).
 
 Used two ways:
   - by the web app (app.py): "Run AI check" button + automatic run every 6 hours
   - from the command line:   python ai_engine.py            (one manual run)
                              python ai_engine.py --dry-run  (preview, changes nothing)
 
-Muse AI jobs:
-  1. Writes the alert emails sent to coordinators (Harsh and AJ)
+What the AI does:
+  1. Writes the alert emails sent to the coordinators
   2. Writes an inventory insight report from the live tables
-  3. Answers coordinator questions about the data ("Ask Muse")
+  3. Answers coordinator questions about the data
 
 The expiry and late-pickup rules are plain code, so the data is always correct.
-Muse AI only writes text. If Muse is unreachable, a built-in template is used.
+The AI only writes text. If it is unreachable, a built-in template is used, so alerts never stop.
+Works with any OpenAI-compatible service (Google Gemini free tier by default).
 """
 import os, sys, json, smtplib, datetime as dt
 from email.message import EmailMessage
@@ -94,13 +95,13 @@ def connect():
     return mysql.connector.connect(**DB)
 
 
-# ---------------- Muse AI ----------------
+# ---------------- AI service ----------------
 def muse_enabled():
     return bool(MUSE_API_KEY)
 
 
 def muse_chat(prompt, max_tokens=2000):
-    """Send one prompt to Muse AI. Tries each provider until one accepts the key. Raises with a clear reason."""
+    """Send one prompt to the AI. Tries each provider until one accepts the key. Raises with a clear reason."""
     order = ([_working["p"]] if "p" in _working else []) + [p for p in PROVIDERS if p != _working.get("p")]
     errors = []
     for url, model in order:
@@ -130,14 +131,17 @@ def muse_status():
 
 
 def muse_email(task, data, log):
-    """Ask Muse to write an email. Returns (subject, body) or None."""
+    """Ask the AI to write an email. Returns (subject, body) or None."""
     if not muse_enabled():
         return None
     try:
         text = muse_chat(f"Task: {task}\nReturn JSON only: {{\"subject\": \"...\", \"body\": \"...\"}}\n"
                          f"Data: {json.dumps(data, default=str)}")
         out = json.loads(text[text.find("{"): text.rfind("}") + 1])
-        return out["subject"][:250], out["body"]
+        subject, body = str(out["subject"]).strip()[:250], str(out["body"]).strip()
+        if not subject or not body:
+            raise ValueError("empty email")
+        return subject, body
     except Exception as e:
         log.append(f"AI unavailable, used template ({e.__class__.__name__})")
         return None
@@ -225,7 +229,7 @@ def expiry_check(cur, mode, dry, log):
     else:
         by = "Template"
         subject = f"[Food Bank] {len(high)} items expiring within 3 days - priority distribution"
-        body = "Hi Harsh and AJ,\n\nThese items need to go out in the next hampers:\n\n" + "\n".join(
+        body = "Hi coordinators,\n\nThese items need to go out in the next hampers:\n\n" + "\n".join(
             f"- {r['item']} ({r['qty']}), expires {r['expires']}, {r['days_left']} day(s) left" for r in rows) + \
             "\n\nAutomated alert from the Food Bank system."
     send_to_coordinators(cur, alert_id, subject, body, by, mode, dry, log)
@@ -247,9 +251,14 @@ def pickup_check(cur, mode, dry, log):
         if new and not dry:
             cur.execute("UPDATE Distribution SET Status=%s WHERE Distribution_ID=%s", (new, d["Distribution_ID"]))
             if new == "Missed":
+                # put the reserved food back on the shelf (items that expired meanwhile stay expired)
                 cur.execute("""UPDATE Inventory_Item i JOIN Distribution_Item di ON di.Item_ID=i.Item_ID
-                               SET i.Quantity=i.Quantity+di.Quantity, i.Status='Available'
+                               SET i.Quantity=i.Quantity+di.Quantity,
+                                   i.Status=IF(i.Status='Expired','Expired','Available')
                                WHERE di.Distribution_ID=%s""", (d["Distribution_ID"],))
+                cur.execute("""UPDATE Expiry_Record e JOIN Distribution_Item di ON di.Item_ID=e.Item_ID
+                               SET e.Quantity=e.Quantity+di.Quantity WHERE di.Distribution_ID=%s""",
+                            (d["Distribution_ID"],))
 
     # any Missed/Delayed pickup (automatic or marked by a volunteer) without an alert yet
     cur.execute("""SELECT d.Distribution_ID, d.Pickup_Date_Time, d.Status, r.Name, r.Phone
@@ -263,8 +272,8 @@ def pickup_check(cur, mode, dry, log):
     alert_id = None
     for d in todo:
         if not dry:
-            cur.execute("INSERT INTO Alert (Type, Distribution_ID, Message) VALUES (%s,%s,%s)",
-                        (d["Status"], d["Distribution_ID"], f"{d['Name']} pickup {d['Status'].lower()}"))
+            cur.execute("INSERT INTO Alert (Type, Distribution_ID, Message, Date_Time) VALUES (%s,%s,%s,%s)",
+                        (d["Status"], d["Distribution_ID"], f"{d['Name']} pickup {d['Status'].lower()}", cur_now))
             alert_id = alert_id or cur.lastrowid
     # one combined email (one AI request) for all missed/delayed pickups, to stay inside free-tier limits
     rows = [{"recipient": d["Name"], "phone": d["Phone"], "pickup_time": d["Pickup_Date_Time"], "status": d["Status"]}
@@ -276,7 +285,7 @@ def pickup_check(cur, mode, dry, log):
     else:
         by = "Template"
         subject = f"[Food Bank] {len(todo)} pickup(s) missed or delayed"
-        body = "Hi Harsh and AJ,\n\nThese pickups need follow-up:\n\n" + "\n".join(
+        body = "Hi coordinators,\n\nThese pickups need follow-up:\n\n" + "\n".join(
             f"- {r['recipient']} ({r['phone']}), pickup {r['pickup_time']}: {r['status']}" for r in rows) + \
             "\n\nPlease contact them to reschedule."
     send_to_coordinators(cur, alert_id, subject, body, by, mode, dry, log)
@@ -303,15 +312,17 @@ def run_check(mode="Manual", dry=False):
     return res
 
 
-# ---------------- Muse AI: insights + Q&A from live tables ----------------
+# ---------------- AI: insights + Q&A from live tables ----------------
 def data_snapshot(cur):
-    """Small summary of the live tables to give Muse context (keeps prompts short and cheap)."""
+    """Small summary of the live tables to give the AI context (keeps prompts short and cheap)."""
     q = lambda s: (cur.execute(use_demo_dates(s, cur)), cur.fetchall())[1]
     return {
         "today": str(today(cur)),
-        "stock_by_category": q("""SELECT c.Name category, COUNT(*) item_lines, SUM(i.Risk_Level='HIGH') high_risk
+        "stock_by_category": q("""SELECT c.Name category, COUNT(*) item_lines,
+                                  SUM(DATEDIFF(i.Expiration_Date,CURDATE())<=3) high_risk
                                   FROM Inventory_Item i JOIN Category c USING(Category_ID)
-                                  WHERE i.Status='Available' AND i.Quantity>0 GROUP BY c.Name"""),
+                                  WHERE i.Status='Available' AND i.Quantity>0 AND i.Expiration_Date>=CURDATE()
+                                  GROUP BY c.Name"""),
         "expiring_soon": q("""SELECT i.Name item, i.Quantity qty, i.Unit unit, i.Expiration_Date expires,
                               DATEDIFF(i.Expiration_Date,CURDATE()) days_left FROM Inventory_Item i
                               WHERE i.Status='Available' AND i.Quantity>0 AND DATEDIFF(i.Expiration_Date,CURDATE()) BETWEEN 0 AND 5
@@ -336,7 +347,7 @@ def data_snapshot(cur):
 
 
 def basic_report(snap):
-    """Backup report from the same data, used when Muse AI can't be reached."""
+    """Backup report from the same data, used when the AI can't be reached."""
     L = [f"Inventory report for {snap['today']} (basic report: AI unavailable)", ""]
     L.append("Waste by category (most first):")
     L += [f"  {w['category']}: {w['expired_items']} expired items" for w in snap["waste_by_category"]] or ["  none"]
@@ -352,7 +363,7 @@ def basic_report(snap):
 
 
 def insights(question=None):
-    """Muse AI reads the live tables and writes a report, or answers a question."""
+    """The AI reads the live tables and writes a report, or answers a question."""
     con = connect()
     cur = con.cursor(dictionary=True, buffered=True)
     try:

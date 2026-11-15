@@ -10,9 +10,11 @@ The AI check also runs automatically every 6 hours while the app is running.
 """
 import os, threading, time, decimal, datetime as dt
 from flask import Flask, jsonify, request, send_from_directory
-import ai_engine
+import mysql.connector
+import ai_engine, setup_db
 
 app = Flask(__name__, static_folder="static")
+app.json.sort_keys = False      # keep table columns in the order the queries define
 EVERY_HOURS = float(os.getenv("AI_EVERY_HOURS", "6"))
 state = {"last_run": None, "next_run": None, "running": False}
 lock = threading.Lock()
@@ -76,6 +78,11 @@ QUERIES = {
         r.Food_Preferences `Dietary Needs`, r.Emergency_Contact `Emergency Contact`, r.Approval_Status Status,
         (SELECT COUNT(*) FROM Distribution d WHERE d.Recipient_ID=r.Recipient_ID AND d.Status='Fulfilled') `Hampers Received`
         FROM Recipient r JOIN User_Account u USING(User_ID)""",
+    "accounts": """SELECT u.User_ID ID, u.Email, u.Role,
+        COALESCE(co.Name, v.Name, dn.Name, r.Name) Name, IF(u.Is_Active,'Active','Disabled') Status,
+        u.Last_Login `Last Login` FROM User_Account u
+        LEFT JOIN Coordinator co ON co.User_ID=u.User_ID LEFT JOIN Volunteer v ON v.User_ID=u.User_ID
+        LEFT JOIN Donor dn ON dn.User_ID=u.User_ID LEFT JOIN Recipient r ON r.User_ID=u.User_ID ORDER BY u.User_ID""",
     "categories": """SELECT c.Category_ID ID, c.Name Category,
         SUM(i.Status='Available' AND i.Quantity>0 AND i.Expiration_Date>=CURDATE()) `In Stock`,
         SUM(i.Status='Available' AND i.Quantity>0 AND DATEDIFF(i.Expiration_Date,CURDATE()) BETWEEN 0 AND 3) `High Risk`,
@@ -93,6 +100,23 @@ def clean(v):
     if isinstance(v, dt.date):
         return v.strftime("%b %d, %Y")
     return v
+
+
+@app.errorhandler(Exception)
+def on_error(e):
+    """Every /api error comes back as JSON with a plain-English reason (no stack traces in the browser)."""
+    if isinstance(e, mysql.connector.Error):
+        hints = {1049: "The foodbank database does not exist yet. Run: python setup_db.py",
+                 1045: "MySQL rejected the login. Check DB_USER and DB_PASS in .env.",
+                 2003: "MySQL is not running. Start the MySQL service, then refresh.",
+                 1146: "The database is out of date. Run: python setup_db.py"}
+        return jsonify({"ok": False, "error": hints.get(e.errno, f"Database error: {e.msg}")}), 500
+    code = getattr(e, "code", 500)
+    if not isinstance(code, int):
+        code = 500
+    if code >= 500:
+        app.logger.exception(e)
+    return jsonify({"ok": False, "error": str(e) if code < 500 else f"Server error: {e}"}), code
 
 
 @app.get("/")
@@ -119,6 +143,7 @@ def data():
     out["today"] = str(day)
     out["demo_date"] = str(day) if day != dt.date.today() else None
     out["items"] = [{"id": r["ID"], "label": f"#{r['ID']} {r['Item']} (exp {r['Expires']})"} for r in out["inventory"]]
+    out["test_password"] = setup_db.TEST_PASSWORD
     return jsonify(out)
 
 
@@ -144,6 +169,101 @@ def ai_run():
 def ai_insights():
     q = (request.get_json(silent=True) or {}).get("question", "").strip()[:500]
     return jsonify(ai_engine.insights(q or None))
+
+
+# ---------------- logins ----------------
+@app.post("/api/login")
+def login():
+    """Checks an email + password against User_Account. The main app can reuse this for its login page."""
+    b = request.get_json(silent=True) or {}
+    email, pw = str(b.get("email", "")).strip().lower(), str(b.get("password", ""))
+    con = ai_engine.connect(); cur = con.cursor(dictionary=True, buffered=True)
+    try:
+        cur.execute("SELECT User_ID, Password_Hash, Role, Is_Active FROM User_Account WHERE LOWER(Email)=%s", (email,))
+        u = cur.fetchone()
+        if not u or not setup_db.check_password(pw, u["Password_Hash"]):
+            return jsonify({"ok": False, "msg": "Wrong email or password."}), 401
+        if not u["Is_Active"]:
+            return jsonify({"ok": False, "msg": "This account is disabled."}), 403
+        cur.execute("UPDATE User_Account SET Last_Login=NOW() WHERE User_ID=%s", (u["User_ID"],))
+        con.commit()
+        return jsonify({"ok": True, "user_id": u["User_ID"], "role": u["Role"],
+                        "msg": f"Login OK. Role: {u['Role']}."})
+    finally:
+        con.close()
+
+
+# ---------------- reports (2 types, monthly or annual) ----------------
+REPORT_TYPES = {"donation": "Donation & Distribution Summary", "waste": "Inventory Waste Summary"}
+
+
+@app.get("/api/report")
+def report():
+    kind = request.args.get("type", "donation")
+    if kind not in REPORT_TYPES:
+        return jsonify({"ok": False, "error": "Unknown report type."}), 400
+    try:
+        year = int(request.args.get("year", dt.date.today().year))
+        month = int(request.args.get("month") or 0)
+        assert 2000 <= year <= 2100 and 0 <= month <= 12
+    except (ValueError, AssertionError):
+        return jsonify({"ok": False, "error": "Pick a valid year and month."}), 400
+
+    def period(col):   # year/month are validated integers
+        return f"YEAR({col})={year}" + (f" AND MONTH({col})={month}" if month else "")
+
+    con = ai_engine.connect(); cur = con.cursor(dictionary=True, buffered=True)
+
+    def q(sql):
+        cur.execute(sql)
+        return [{c: clean(v) for c, v in r.items()} for r in cur.fetchall()]
+    try:
+        if kind == "donation":
+            t = q(f"""SELECT COUNT(DISTINCT d.Donation_ID) donations, COUNT(DISTINCT d.Donor_ID) donors, COUNT(i.Item_ID) item_lines
+                      FROM Donation d LEFT JOIN Inventory_Item i USING(Donation_ID) WHERE {period('d.Date_Time')}""")[0]
+            h = q(f"""SELECT COALESCE(SUM(Status='Fulfilled'),0) fulfilled, COALESCE(SUM(Status IN ('Missed','Delayed')),0) missed,
+                      COUNT(DISTINCT IF(Status='Fulfilled',Recipient_ID,NULL)) households
+                      FROM Distribution WHERE {period('Pickup_Date_Time')}""")[0]
+            summary = [["Donations received", t["donations"]], ["Active donors", t["donors"]], ["Item lines donated", t["item_lines"]],
+                       ["Hampers given out", h["fulfilled"]], ["Households served", h["households"]],
+                       ["Missed or delayed pickups", h["missed"]]]
+            tables = [
+                ["Donations by donor", q(f"""SELECT dn.Name Donor, dn.Donor_Type Type, COUNT(DISTINCT d.Donation_ID) Donations,
+                    COUNT(i.Item_ID) `Item Lines` FROM Donation d JOIN Donor dn USING(Donor_ID)
+                    LEFT JOIN Inventory_Item i USING(Donation_ID) WHERE {period('d.Date_Time')}
+                    GROUP BY dn.Donor_ID ORDER BY `Item Lines` DESC""")],
+                ["Donated food by category", q(f"""SELECT c.Name Category, COUNT(*) `Item Lines` FROM Donation d
+                    JOIN Inventory_Item i USING(Donation_ID) JOIN Category c USING(Category_ID)
+                    WHERE {period('d.Date_Time')} GROUP BY c.Category_ID ORDER BY `Item Lines` DESC""")],
+                ["Hampers by recipient", q(f"""SELECT r.Name Recipient, r.Household_Size Household,
+                    SUM(ds.Status='Fulfilled') `Hampers Received`, SUM(ds.Status IN ('Missed','Delayed')) `Missed or Delayed`
+                    FROM Distribution ds JOIN Recipient r USING(Recipient_ID) WHERE {period('ds.Pickup_Date_Time')}
+                    GROUP BY r.Recipient_ID ORDER BY `Hampers Received` DESC""")]]
+        else:
+            t = q(f"SELECT COUNT(*) n, COUNT(DISTINCT Category_ID) cats FROM Expiry_Record WHERE {period('Expired_On')}")[0]
+            d = q(f"""SELECT COUNT(*) n FROM Inventory_Item i JOIN Donation d USING(Donation_ID) WHERE {period('d.Date_Time')}""")[0]
+            rate = f"{100 * t['n'] / d['n']:.0f}%" if d["n"] else "n/a"
+            summary = [["Expired item lines", t["n"]], ["Categories affected", t["cats"]],
+                       ["Item lines donated in period", d["n"]], ["Waste rate (expired / donated)", rate]]
+            tables = [
+                ["Waste by category", q(f"""SELECT c.Name Category, COUNT(*) `Expired Lines`,
+                    CONCAT(ROUND(100*COUNT(*)/(SELECT COUNT(*) FROM Expiry_Record WHERE {period('Expired_On')})),'%') Share
+                    FROM Expiry_Record e JOIN Category c ON c.Category_ID=e.Category_ID WHERE {period('e.Expired_On')}
+                    GROUP BY c.Category_ID ORDER BY `Expired Lines` DESC""")],
+                ["Most wasted items", q(f"""SELECT i.Name Item, COUNT(*) `Expired Lines`, SUM(e.Quantity) `Total Qty`, i.Unit
+                    FROM Expiry_Record e JOIN Inventory_Item i USING(Item_ID) WHERE {period('e.Expired_On')}
+                    GROUP BY i.Name, i.Unit ORDER BY `Expired Lines` DESC, `Total Qty` DESC LIMIT 10""")],
+                ["Waste by donor", q(f"""SELECT dn.Name Donor, COUNT(*) `Expired Lines` FROM Expiry_Record e
+                    JOIN Inventory_Item i USING(Item_ID) JOIN Donation d ON d.Donation_ID=i.Donation_ID JOIN Donor dn USING(Donor_ID)
+                    WHERE {period('e.Expired_On')} GROUP BY dn.Donor_ID ORDER BY `Expired Lines` DESC""")]]
+        # record that the report was generated (Report table)
+        cur.execute("""INSERT INTO Report (Report_Type, Report_Year, Report_Month, Generated_By)
+                       SELECT %s, %s, %s, MIN(Coordinator_ID) FROM Coordinator""", (REPORT_TYPES[kind], year, month or None))
+        con.commit()
+    finally:
+        con.close()
+    when = (dt.date(year, month, 1).strftime("%B %Y") if month else f"{year} (annual)")
+    return jsonify({"ok": True, "title": f"{REPORT_TYPES[kind]}: {when}", "summary": summary, "tables": tables})
 
 
 # ---------------- demo controls ----------------
@@ -180,8 +300,10 @@ def demo_expiry():
 @app.post("/api/demo/reset")
 def demo_reset():
     """Reload the original test data (clears demo changes, alerts and emails)."""
-    import setup_db
-    setup_db.main()
+    if state["running"]:
+        return jsonify({"ok": False, "msg": "An AI check is running. Try again in a moment."}), 409
+    with lock:
+        setup_db.main(quiet=True)
     return jsonify({"ok": True, "msg": "Test data reloaded."})
 
 
