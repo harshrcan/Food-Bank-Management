@@ -258,24 +258,28 @@ def pickup_check(cur, mode, dry, log):
                    AND NOT EXISTS (SELECT 1 FROM Alert a WHERE a.Distribution_ID=d.Distribution_ID AND a.Type=d.Status)""")
     todo = cur.fetchall()
     log.append(f"Pickup check: {len(todo)} missed/delayed pickups need an alert")
+    if not todo:
+        return {"pickup_alerts": 0}
+    alert_id = None
     for d in todo:
-        alert_id = None
         if not dry:
             cur.execute("INSERT INTO Alert (Type, Distribution_ID, Message) VALUES (%s,%s,%s)",
                         (d["Status"], d["Distribution_ID"], f"{d['Name']} pickup {d['Status'].lower()}"))
-            alert_id = cur.lastrowid
-        data = {"recipient": d["Name"], "phone": d["Phone"], "pickup_time": d["Pickup_Date_Time"], "status": d["Status"]}
-        ai = muse_email(f"Tell the coordinators this hamper pickup was {d['Status'].lower()} and suggest "
-                        "calling the recipient to reschedule.", data, log)
-        if ai:
-            subject, body, by = ai[0], ai[1], "AI"
-        else:
-            by = "Template"
-            subject = f"[Food Bank] Pickup {d['Status'].lower()}: {d['Name']}"
-            body = (f"Hi Harsh and AJ,\n\nRecipient: {d['Name']}\nPhone: {d['Phone']}\n"
-                    f"Scheduled pickup: {d['Pickup_Date_Time']}\nStatus: {d['Status']}\n\n"
-                    "Please contact the recipient to reschedule.")
-        send_to_coordinators(cur, alert_id, subject, body, by, mode, dry, log)
+            alert_id = alert_id or cur.lastrowid
+    # one combined email (one AI request) for all missed/delayed pickups, to stay inside free-tier limits
+    rows = [{"recipient": d["Name"], "phone": d["Phone"], "pickup_time": d["Pickup_Date_Time"], "status": d["Status"]}
+            for d in todo]
+    ai = muse_email("Write ONE email telling the coordinators about these missed or delayed hamper pickups, "
+                    "and suggest calling each recipient to reschedule.", rows, log)
+    if ai:
+        subject, body, by = ai[0], ai[1], "AI"
+    else:
+        by = "Template"
+        subject = f"[Food Bank] {len(todo)} pickup(s) missed or delayed"
+        body = "Hi Harsh and AJ,\n\nThese pickups need follow-up:\n\n" + "\n".join(
+            f"- {r['recipient']} ({r['phone']}), pickup {r['pickup_time']}: {r['status']}" for r in rows) + \
+            "\n\nPlease contact them to reschedule."
+    send_to_coordinators(cur, alert_id, subject, body, by, mode, dry, log)
     return {"pickup_alerts": len(todo)}
 
 
