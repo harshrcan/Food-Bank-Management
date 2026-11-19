@@ -79,15 +79,16 @@ function overview(){const s=D.stats;const c=(n,l,w)=>`<div class="card ${w||''}"
  <div class="cards">${c(s.donors,'Donors')}${c(s.donations,'Donations received')}${c(s.instock,'Items in stock')}${c(s.highrisk,'High-risk items (≤3 days)','warn')}${s.pending?c(s.pending,'Expired, waiting for AI removal','warn'):''}
  ${c(s.expired,'Expired & removed','warn')}${c(s.hampers,'Hampers given out')}${c(s.recipients,'Approved recipients')}${c(s.volunteers,'Volunteers')}${c(s.coordinators,'Coordinators')}${c(s.emails,'AI alert emails')}</div>
  <h2 style="font-size:16px;margin-bottom:10px">Stock by category</h2>${table(D.categories,'categories',true)}`}
+function autoPanel(a){return `<div class="panel" id="autop"><h3>1. Automatic expiry & pickup check <span class="badge ${a.running?'':'off'}">${a.running?'Running now...':'Automatic'}</span></h3><p class="role">Moves expired food to the expiry section, flags items that expire within 3 days or before the next distribution shift, flags categories running low, marks late pickups, and emails the coordinators and the volunteers on shift that day.
+ Last full run: ${a.last_run||'starting...'}${a.last_reason?' ('+esc(a.last_reason)+')':''} · Next scheduled run: ${a.next_run||'—'}</p>
+ <div class="out" id="runo">${a.last_log&&a.last_log.length?esc(a.last_log.join('\n')):(a.running?'The AI check is running...':'Waiting for the first automatic run.')}</div></div>`}
 function aiPage(){const a=D.ai;return `<h2>AI assistant <span class="badge ${a.muse?'':'off'}">${a.muse?'AI: '+a.muse_status:'AI key missing'}</span> <span class="badge ${a.smtp?'':'off'}">${a.smtp?'Email: sending':'Email: log only'}</span></h2>
- <p class="lead">The system flags expiring food and late pickups, and the AI writes the alert emails. While the app is open, pickups are checked every ${a.pickup_minutes} minutes and the full check runs every ${a.every_hours} hours. You can also run it any time.</p>
- <div class="panel"><h3>Demo controls</h3><p class="role">For the presentation: pretend it's a later date, or make an item expire, then run the AI check and watch it get removed.</p>
+ <p class="lead">The system flags expiring food and late pickups, and the AI writes the alert emails to the coordinators and the volunteers working that day. It all runs automatically: when the app starts, right after any data change, every ${a.every_hours} hour(s), and a quick pickup check every ${a.pickup_minutes} minutes.</p>
+ <div class="panel"><h3>Demo controls</h3><p class="role">For the presentation: pretend it's a later date, or make an item expire. The AI check starts by itself a moment later.</p>
  <div class="grid2"><div><b style="font-size:13px">Pretend today is</b><div class="row" style="margin-top:6px"><input type="date" id="dd" value="${D.today}"><button class="btn sec" onclick="demo('date',{date:document.getElementById('dd').value})">Set date</button><button class="btn sec" onclick="demo('date',{date:null})">Use real date</button></div></div>
  <div><b style="font-size:13px">Change an item's expiry date</b><div class="row" style="margin-top:6px"><select id="di" class="wide">${D.items.map(i=>`<option value="${i.id}">${esc(i.label)}</option>`).join('')}</select><input type="date" id="de" value="${D.today}"><button class="btn sec" onclick="demo('expiry',{item_id:document.getElementById('di').value,date:document.getElementById('de').value})">Save</button></div></div></div>
  <div class="row" style="margin-top:12px"><button class="btn sec" onclick="if(window.confirmReset){demo('reset',{})}else{window.confirmReset=1;this.textContent='Click again to reset all test data'}">Reset all test data</button><span class="role" id="demoo"></span></div></div>
- <div class="panel"><h3>1. Expiry & pickup check</h3><p class="role">Moves expired food to the expiry section, flags items with 3 days or less left, marks late pickups, and emails the coordinators (plus volunteers on upcoming shifts for expiry alerts).
- Last run: ${a.last_run||'not yet this session'} · Next automatic run: ${a.next_run||'—'}</p>
- <button class="btn" id="runb" onclick="runAI()">Run AI check now</button><div class="out" id="runo">Results will show here.</div></div>
+ ${autoPanel(a)}
  <div class="panel"><h3>2. Inventory insight report</h3><p class="role">Shelf-life trends, what to use first, and hamper suggestions that respect each recipient's dietary needs.</p>
  <button class="btn sec" id="insb" onclick="ask()">Generate report</button><div class="out" id="inso">The report will show here.</div></div>
  <div class="panel"><h3>3. Ask the AI about the data</h3><p class="role">Ask a question in plain English. The AI answers using only the live database.</p>
@@ -112,11 +113,11 @@ async function tryLogin(){const o=document.getElementById('lo');o.textContent='C
  try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:document.getElementById('le').value,password:document.getElementById('lp').value})});
  const j=await r.json();o.textContent=j.msg||j.error;if(j.ok){D=await api('/api/data');nav();draw()}}catch(e){o.textContent='Could not reach the server.'}}
 async function demo(kind,body){const o=document.getElementById('demoo');o.textContent='Working...';
- try{const j=await api('/api/demo/'+kind,body);D=await api('/api/data');window.confirmReset=0;render();document.getElementById('demoo').textContent=j.msg}
+ try{const j=await api('/api/demo/'+kind,body);D=await api('/api/data');window.confirmReset=0;window.__aiWatch=3;render();document.getElementById('demoo').textContent=j.msg}
  catch(e){o.textContent=e.message}}
-async function runAI(){if(window.__EMBED__){document.getElementById('runo').textContent='This is the online preview. Run the app locally (python app.py) to use the AI.';return}const b=document.getElementById('runb'),o=document.getElementById('runo');b.disabled=true;o.textContent='Running the AI check...';
- try{const j=await api('/api/ai/run',{});const msg=j.log.join('\n');D=await api('/api/data');render();document.getElementById('runo').textContent=msg}
- catch(e){o.textContent='Could not run the check: '+e.message;b.disabled=false}}
+// The AI check runs on the server by itself. While a check is running, refresh the page data every 3 s.
+setInterval(async()=>{try{if(window.__EMBED__||!D||!D.ai)return;if(D.ai.running||window.__aiWatch>0){window.__aiWatch=(window.__aiWatch||1)-1;const was=D.ai.running;D=await api('/api/data');
+ if(D.ai.running)window.__aiWatch=2;const p=document.getElementById('autop');if(p)p.outerHTML=autoPanel(D.ai);else if(cur==='ai')render()}}catch(e){}},3000);
 async function ask(q){if(window.__EMBED__){const isQ0=typeof q==='string';document.getElementById(isQ0?'asko':'inso').textContent='This is the online preview. Run the app locally (python app.py) to use the AI.';return}const isQ=typeof q==='string';if(isQ&&!q.trim())return;const o=document.getElementById(isQ?'asko':'inso');const b=document.getElementById('insb');
  o.textContent='The AI is reading the database...';if(!isQ)b.disabled=true;
  try{const j=await api('/api/ai/insights',isQ?{question:q}:{});o.textContent=j.text;if(j.ok&&!D.ai.muse_status.startsWith('connected')){D=await api('/api/data');const bd=document.querySelector('h2 .badge');if(bd)bd.textContent='AI: '+D.ai.muse_status}}

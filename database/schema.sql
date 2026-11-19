@@ -98,7 +98,7 @@ CREATE TABLE Distribution (
   Distribution_ID       INT AUTO_INCREMENT PRIMARY KEY,
   Recipient_ID          INT NOT NULL,
   Pickup_Date_Time      DATETIME NOT NULL,
-  Status                ENUM('Scheduled','Fulfilled','Missed','Delayed') NOT NULL DEFAULT 'Scheduled',
+  Status                ENUM('Pending','Scheduled','Fulfilled','Missed','Delayed') NOT NULL DEFAULT 'Pending',  -- SRS 3.1.2
   Given_By_Volunteer_ID INT NULL,         -- volunteer who handed the hamper to the recipient
   Shift_ID              INT NULL,         -- distribution shift this pickup belongs to (set when assigned)
   FOREIGN KEY (Recipient_ID) REFERENCES Recipient(Recipient_ID),

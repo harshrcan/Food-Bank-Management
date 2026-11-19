@@ -43,7 +43,11 @@ try:
     show(bool(row) and setup_db.check_password(setup_db.TEST_PASSWORD, row[0]),
          f"Test logins work (password: {setup_db.TEST_PASSWORD})", "Run: python setup_db.py")
     cur.execute("SELECT GROUP_CONCAT(u.Email SEPARATOR ', ') FROM Coordinator c JOIN User_Account u USING(User_ID)")
-    show(True, f"Alert emails go to: {cur.fetchone()[0]}")
+    show(True, f"Alert emails go to coordinators: {cur.fetchone()[0]}")
+    cur2 = con.cursor(dictionary=True, buffered=True)
+    vols = ai_engine.day_volunteers(cur2)
+    show(True if vols else None, "Volunteers on shift today (also emailed): " + (", ".join(v["Name"] for v in vols) or "none"),
+         "Nobody has a shift today, so only coordinators get alerts today. Use 'Pretend today is' to demo a shift day.")
     cur.execute("SELECT Setting_Value FROM App_Setting WHERE Setting_Key='Demo_Date'")
     row = cur.fetchone()
     if row and row[0]:
@@ -65,7 +69,17 @@ else:
 
 show(True if ai_engine.smtp_ready() else None,
      "Email sending is set up" if ai_engine.smtp_ready() else "Email not set up (alerts are saved in Email_Log only)",
-     "Optional: put a Gmail address and App Password in SMTP_USER / SMTP_PASS in .env.")
+     "Put a Gmail address and App Password in SMTP_USER / SMTP_PASS in .env.")
+if ai_engine.smtp_ready():
+    try:
+        ai_engine._smtp().quit()
+        show(True, "Logged in to the email server")
+    except Exception as e:
+        show(False, f"Email server login failed ({str(e)[:120]})", "Check SMTP_USER and the 16-character App Password in .env.")
+    show(True if ai_engine.ALERT_REDIRECT_TO else None,
+         f"Test-account alerts are delivered to {ai_engine.ALERT_REDIRECT_TO}" if ai_engine.ALERT_REDIRECT_TO
+         else "Test volunteers have fake addresses, so their alerts are only logged",
+         "Set ALERT_REDIRECT_TO in .env to a real inbox to see every volunteer email arrive.")
 
 print("\nReady for the demo." if ok_all else "\nFix the FAIL lines above, then run this again.")
 sys.exit(0 if ok_all else 1)

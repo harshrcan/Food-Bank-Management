@@ -6,7 +6,8 @@ Food Bank database viewer + AI assistant (local web app).
 
 The page (static/index.html) reads live data from MySQL through /api/data.
 The AI service is only called from this server, so the API key never reaches the browser.
-The AI check also runs automatically every 6 hours while the app is running.
+The AI check runs automatically (no button): once at startup, every AI_EVERY_HOURS, a quick pickup
+check every PICKUP_CHECK_MINUTES, and right after any data change. Other code can call trigger_check().
 """
 import os, threading, time, decimal, datetime as dt
 from flask import Flask, jsonify, request, send_from_directory
@@ -15,10 +16,11 @@ import ai_engine, setup_db
 
 app = Flask(__name__, static_folder="static")
 app.json.sort_keys = False      # keep table columns in the order the queries define
-EVERY_HOURS = float(os.getenv("AI_EVERY_HOURS", "6"))           # full check (expiry + pickups)
+EVERY_HOURS = float(os.getenv("AI_EVERY_HOURS", "1"))           # full check (expiry + pickups)
 PICKUP_MINUTES = float(os.getenv("PICKUP_CHECK_MINUTES", "15"))  # quick missed/delayed pickup check
-state = {"last_run": None, "next_run": None, "running": False}
+state = {"last_run": None, "next_run": None, "running": False, "last_reason": None, "last_log": []}
 lock = threading.Lock()
+pending = threading.Event()     # a data change arrived while a check was running: run once more after
 
 QUERIES = {
     "stats": """SELECT (SELECT COUNT(*) FROM Donor) donors,
@@ -148,11 +150,13 @@ def data():
     return jsonify(out)
 
 
-def do_run(mode, pickups_only=False):
+def do_run(reason, pickups_only=False):
     with lock:
         state["running"] = True
         try:
-            res = ai_engine.run_check(mode=mode, pickups_only=pickups_only)
+            res = ai_engine.run_check(mode="Automatic", pickups_only=pickups_only)
+            if not pickups_only or any(l.startswith("  Email") for l in res["log"]):
+                state["last_log"], state["last_reason"] = res["log"], reason
         finally:
             state["running"] = False
             if not pickups_only:
@@ -160,11 +164,23 @@ def do_run(mode, pickups_only=False):
     return res
 
 
-@app.post("/api/ai/run")
-def ai_run():
+def trigger_check(reason):
+    """Start the full AI check in the background right away. Call this after anything that changes
+    inventory, pickups or shifts. If a check is already running, one more run follows it."""
+    def work():
+        while True:
+            pending.clear()
+            try:
+                do_run(reason)
+            except Exception as e:
+                print("Automatic check failed:", e)
+                state["last_log"], state["last_reason"] = [f"Automatic check failed: {e}"], reason
+            if not pending.is_set():
+                break
     if state["running"]:
-        return jsonify({"log": ["An AI check is already running. Try again in a moment."]}), 409
-    return jsonify(do_run("Manual"))
+        pending.set()
+    else:
+        threading.Thread(target=work, daemon=True).start()
 
 
 @app.post("/api/ai/insights")
@@ -193,6 +209,33 @@ def login():
                         "msg": f"Login OK. Role: {u['Role']}."})
     finally:
         con.close()
+
+
+# ---------------- pickups ----------------
+@app.post("/api/pickup/status")
+def pickup_status():
+    """A volunteer marks a pickup Fulfilled, Missed or Delayed. Missed/Delayed emails go out right away
+    (SRS 3.1.3), to the coordinators and the volunteers on shift that day. The main app can reuse this."""
+    b = request.get_json(silent=True) or {}
+    status = str(b.get("status", "")).title()
+    try:
+        dist_id = int(b.get("distribution_id"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Send distribution_id and status."}), 400
+    if status not in ("Fulfilled", "Missed", "Delayed"):
+        return jsonify({"ok": False, "error": "Status must be Fulfilled, Missed or Delayed."}), 400
+    con = ai_engine.connect(); cur = con.cursor()
+    try:
+        cur.execute("UPDATE Distribution SET Status=%s WHERE Distribution_ID=%s", (status, dist_id))
+        n = cur.rowcount; con.commit()
+    finally:
+        con.close()
+    if not n:
+        return jsonify({"ok": False, "error": "No pickup with that ID (or it already has that status)."}), 404
+    if status != "Fulfilled":
+        trigger_check(f"pickup #{dist_id} marked {status.lower()}")
+    return jsonify({"ok": True, "msg": f"Pickup #{dist_id} marked {status}."
+                    + (" Alert emails are going out automatically." if status != "Fulfilled" else "")})
 
 
 # ---------------- reports (2 types, monthly or annual) ----------------
@@ -284,7 +327,9 @@ def demo_date():
     con = ai_engine.connect(); cur = con.cursor()
     cur.execute("REPLACE INTO App_Setting (Setting_Key, Setting_Value) VALUES ('Demo_Date', %s)", (d or None,))
     con.commit(); con.close()
-    return jsonify({"ok": True, "msg": f"Demo date set to {d}." if d else "Back to the real date."})
+    trigger_check("demo date changed")
+    return jsonify({"ok": True, "msg": (f"Demo date set to {d}." if d else "Back to the real date.") +
+                    " The AI check is running automatically."})
 
 
 @app.post("/api/demo/expiry")
@@ -298,7 +343,9 @@ def demo_expiry():
     con = ai_engine.connect(); cur = con.cursor()
     cur.execute("UPDATE Inventory_Item SET Expiration_Date=%s WHERE Item_ID=%s AND Status='Available'", (d, item))
     n = cur.rowcount; con.commit(); con.close()
-    return jsonify({"ok": bool(n), "msg": f"Item #{item} now expires {d}. Run the AI check to see it handled."
+    if n:
+        trigger_check(f"item #{item} expiry date changed")
+    return jsonify({"ok": bool(n), "msg": f"Item #{item} now expires {d}. The AI check is running automatically."
                     if n else "That item is not in stock any more."})
 
 
@@ -309,23 +356,29 @@ def demo_reset():
         return jsonify({"ok": False, "msg": "An AI check is running. Try again in a moment."}), 409
     with lock:
         setup_db.main(quiet=True)
-    return jsonify({"ok": True, "msg": "Test data reloaded."})
+        state["last_log"], state["last_reason"] = [], None
+    trigger_check("test data reset")
+    return jsonify({"ok": True, "msg": "Test data reloaded. The AI check is running automatically."})
 
 
 def scheduler():
-    """Runs by itself while the app is open: a quick missed/delayed pickup check every PICKUP_MINUTES
-    (so coordinators hear about a late pickup soon), and the full check every EVERY_HOURS."""
-    next_full = dt.datetime.now() + dt.timedelta(hours=EVERY_HOURS)
+    """Runs by itself while the app is open: the full check once at startup, a quick missed/delayed
+    pickup check every PICKUP_MINUTES, and the full check every EVERY_HOURS and when the day changes
+    (so that day's shift volunteers get the alerts)."""
+    trigger_check("app started")
+    next_full, day = dt.datetime.now() + dt.timedelta(hours=EVERY_HOURS), dt.date.today()
     while True:
         state["next_run"] = next_full.strftime("%b %d, %Y %I:%M %p")
         time.sleep(PICKUP_MINUTES * 60)
-        full = dt.datetime.now() >= next_full
+        if state["running"]:
+            continue
+        full = dt.datetime.now() >= next_full or dt.date.today() != day
         try:
-            do_run("Automatic", pickups_only=not full)
+            do_run("scheduled full check" if full else "scheduled pickup check", pickups_only=not full)
         except Exception as e:
             print("Automatic check failed:", e)
         if full:
-            next_full = dt.datetime.now() + dt.timedelta(hours=EVERY_HOURS)
+            next_full, day = dt.datetime.now() + dt.timedelta(hours=EVERY_HOURS), dt.date.today()
 
 
 if __name__ == "__main__":
