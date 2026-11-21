@@ -70,14 +70,10 @@ def is_real_address(addr):
 
 def smtp_settings_problem():
     """Catches the common mix-up before trying: a non-Gmail address or a normal password used with Gmail."""
-    if "gmail" in SMTP_HOST.lower():
-        if not SMTP_USER.lower().endswith(("@gmail.com", "@googlemail.com")):
-            return (f"SMTP_USER is {SMTP_USER.split('@')[0][:2]}***@{SMTP_USER.split('@')[-1]}, but smtp.gmail.com only "
-                    "accepts a Gmail address. Put a Gmail address in SMTP_USER and that account's App Password in SMTP_PASS. "
-                    "(Do not put your school password in .env.)")
+    if "gmail" in SMTP_HOST.lower():      # Gmail and Google Workspace (school/work) accounts both use smtp.gmail.com
         if len(SMTP_PASS) != 16 or not SMTP_PASS.isalpha():
-            return ("SMTP_PASS does not look like a Gmail App Password (16 letters). Make one at "
-                    "myaccount.google.com/apppasswords. Your normal Gmail password will not work.")
+            return ("SMTP_PASS does not look like a Google App Password (16 letters). Make one at "
+                    "myaccount.google.com/apppasswords while signed in as SMTP_USER. A normal password will not work.")
     return None
 
 
@@ -87,14 +83,15 @@ def explain_smtp_error(e):
     if hint:
         return hint
     if isinstance(e, smtplib.SMTPAuthenticationError):
-        return ("The mail server rejected the login. For Gmail, SMTP_PASS must be a 16-letter App Password "
-                "(myaccount.google.com/apppasswords), not your normal password, and SMTP_USER must be that Gmail address.")
+        return ("The mail server rejected the login. SMTP_PASS must be a 16-letter App Password made while signed in as "
+                "SMTP_USER (myaccount.google.com/apppasswords). If it is a school account, the school may not allow App Passwords: "
+                "use a personal Gmail as the sender instead.")
     if isinstance(e, smtplib.SMTPRecipientsRefused):
         return "The mail server refused the recipient address."
     if isinstance(e, smtplib.SMTPServerDisconnected):
-        return ("The mail server closed the connection. Usually the login details are wrong (Gmail needs a Gmail "
-                "address and an App Password), or antivirus or the network is blocking email. Try another network, "
-                "or set SMTP_PORT=465 in .env.")
+        return ("The mail server closed the connection on ports 587 and 465. Restart the app after editing .env "
+                "(it only reads .env when it starts). If it still fails, antivirus or the network (some school/work Wi-Fi) "
+                "is blocking email: try another network such as a phone hotspot.")
     if isinstance(e, (OSError, smtplib.SMTPConnectError)):
         return f"Could not reach the mail server {SMTP_HOST}:{SMTP_PORT} ({e.__class__.__name__}). Check SMTP_HOST, SMTP_PORT and your internet."
     return str(e)[:300] if isinstance(e, ValueError) else f"{e.__class__.__name__}: {str(e)[:150]}"
@@ -105,14 +102,26 @@ def smtp_connect():
     hint = smtp_settings_problem()
     if hint:
         raise ValueError(hint)
-    if SMTP_SECURITY == "ssl":
-        s = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20)
-    else:
-        s = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20)
-        if SMTP_SECURITY == "starttls":
-            s.starttls()
-    s.login(SMTP_USER, SMTP_PASS)
-    return s
+    def open_conn(security, port):
+        if security == "ssl":
+            conn = smtplib.SMTP_SSL(SMTP_HOST, port, timeout=20)
+        else:
+            conn = smtplib.SMTP(SMTP_HOST, port, timeout=20)
+            if security == "starttls":
+                conn.starttls()
+        conn.login(SMTP_USER, SMTP_PASS)
+        return conn
+    try:
+        return open_conn(SMTP_SECURITY, SMTP_PORT)
+    except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, OSError) as first:
+        if isinstance(first, smtplib.SMTPAuthenticationError) or SMTP_SECURITY == "none":
+            raise
+        # some networks or antivirus block one port: try the other standard one before giving up
+        other = ("ssl", 465) if SMTP_SECURITY == "starttls" else ("starttls", 587)
+        try:
+            return open_conn(*other)
+        except Exception:
+            raise first
 
 
 def send_emails(batch):
