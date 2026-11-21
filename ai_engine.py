@@ -68,20 +68,43 @@ def is_real_address(addr):
                 or addr.split("@")[-1] in ("example.com", "example.org", "example.net"))
 
 
+def smtp_settings_problem():
+    """Catches the common mix-up before trying: a non-Gmail address or a normal password used with Gmail."""
+    if "gmail" in SMTP_HOST.lower():
+        if not SMTP_USER.lower().endswith(("@gmail.com", "@googlemail.com")):
+            return (f"SMTP_USER is {SMTP_USER.split('@')[0][:2]}***@{SMTP_USER.split('@')[-1]}, but smtp.gmail.com only "
+                    "accepts a Gmail address. Put a Gmail address in SMTP_USER and that account's App Password in SMTP_PASS. "
+                    "(Do not put your school password in .env.)")
+        if len(SMTP_PASS) != 16 or not SMTP_PASS.isalpha():
+            return ("SMTP_PASS does not look like a Gmail App Password (16 letters). Make one at "
+                    "myaccount.google.com/apppasswords. Your normal Gmail password will not work.")
+    return None
+
+
 def explain_smtp_error(e):
     """Turns mail-server errors into a plain fix."""
+    hint = smtp_settings_problem()
+    if hint:
+        return hint
     if isinstance(e, smtplib.SMTPAuthenticationError):
         return ("The mail server rejected the login. For Gmail, SMTP_PASS must be a 16-letter App Password "
                 "(myaccount.google.com/apppasswords), not your normal password, and SMTP_USER must be that Gmail address.")
     if isinstance(e, smtplib.SMTPRecipientsRefused):
         return "The mail server refused the recipient address."
-    if isinstance(e, (OSError, smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected)):
+    if isinstance(e, smtplib.SMTPServerDisconnected):
+        return ("The mail server closed the connection. Usually the login details are wrong (Gmail needs a Gmail "
+                "address and an App Password), or antivirus or the network is blocking email. Try another network, "
+                "or set SMTP_PORT=465 in .env.")
+    if isinstance(e, (OSError, smtplib.SMTPConnectError)):
         return f"Could not reach the mail server {SMTP_HOST}:{SMTP_PORT} ({e.__class__.__name__}). Check SMTP_HOST, SMTP_PORT and your internet."
-    return f"{e.__class__.__name__}: {str(e)[:150]}"
+    return str(e)[:300] if isinstance(e, ValueError) else f"{e.__class__.__name__}: {str(e)[:150]}"
 
 
 def smtp_connect():
     """Opens one logged-in connection to the mail server (reused for every email in a batch)."""
+    hint = smtp_settings_problem()
+    if hint:
+        raise ValueError(hint)
     if SMTP_SECURITY == "ssl":
         s = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20)
     else:
