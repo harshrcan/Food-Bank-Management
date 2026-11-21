@@ -169,6 +169,12 @@ def ai_run():
     return jsonify(do_run("Manual"))
 
 
+@app.post("/api/email/test")
+def email_test():
+    """Sends a test email to the coordinators (Harsh and AJ)."""
+    return jsonify(ai_engine.send_test_email())
+
+
 @app.post("/api/ai/insights")
 def ai_insights():
     q = (request.get_json(silent=True) or {}).get("question", "").strip()[:500]

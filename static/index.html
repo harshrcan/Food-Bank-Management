@@ -87,6 +87,8 @@ function aiPage(){const a=D.ai;return `<h2>AI assistant <span class="badge ${a.m
  <div class="grid2"><div><b style="font-size:13px">Pretend today is</b><div class="row" style="margin-top:6px"><input type="date" id="dd" value="${D.today}"><button class="btn sec" onclick="demo('date',{date:document.getElementById('dd').value})">Set date</button><button class="btn sec" onclick="demo('date',{date:null})">Use real date</button></div></div>
  <div><b style="font-size:13px">Change an item's expiry date</b><div class="row" style="margin-top:6px"><select id="di" class="wide">${D.items.map(i=>`<option value="${i.id}">${esc(i.label)}</option>`).join('')}</select><input type="date" id="de" value="${D.today}"><button class="btn sec" onclick="demo('expiry',{item_id:document.getElementById('di').value,date:document.getElementById('de').value})">Save</button></div></div></div>
  <div class="row" style="margin-top:12px"><button class="btn sec" onclick="if(window.confirmReset){demo('reset',{})}else{window.confirmReset=1;this.textContent='Click again to reset all test data'}">Reset all test data</button><span class="role" id="demoo"></span></div></div>
+ <div class="panel"><h3>Email alerts</h3><p class="role">${a.smtp?`Real emails go to the coordinators: ${D.coordinators.map(c=>esc(c.Email)).join(', ')}.`:'Email is not set up yet, so alerts are only saved in the email log. Add SMTP_USER and SMTP_PASS to .env and restart.'}</p>
+ <button class="btn sec" id="mailb" onclick="testMail()">Send a test email</button><div class="out" id="mailo">Sends one email to each coordinator so you can check it arrives.</div></div>
  <div class="panel"><h3>1. Expiry & pickup check</h3><p class="role">Moves expired food to the expiry section, flags HIGH risk (3 days or less) and WATCH items (may expire before they can be given out), spots declining categories, marks late pickups, and emails the coordinators (plus volunteers on upcoming shifts for expiry alerts).
  Last run: ${a.last_run||'not yet this session'} · Next automatic run: ${a.next_run||'—'}</p>
  <button class="btn" id="runb" onclick="runAI()">Run AI check now</button><div class="out" id="runo">Results will show here.</div></div>
@@ -147,6 +149,9 @@ async function loadPortal(){if(window.__EMBED__){portalLogin('Run the app locall
 async function demo(kind,body){const o=document.getElementById('demoo');o.textContent='Working...';
  try{const j=await api('/api/demo/'+kind,body);D=await api('/api/data');window.confirmReset=0;render();document.getElementById('demoo').textContent=j.msg}
  catch(e){o.textContent=e.message}}
+async function testMail(){const b=document.getElementById('mailb'),o=document.getElementById('mailo');
+ if(window.__EMBED__){o.textContent='Run the app locally to send emails.';return}
+ b.disabled=true;o.textContent='Sending...';try{const j=await api('/api/email/test',{});o.textContent=j.log.join('\n');D=await api('/api/data');nav()}catch(e){o.textContent=e.message}b.disabled=false}
 async function runAI(){if(window.__EMBED__){document.getElementById('runo').textContent='This is the online preview. Run the app locally (python app.py) to use the AI.';return}const b=document.getElementById('runb'),o=document.getElementById('runo');b.disabled=true;o.textContent='Running the AI check...';
  try{const j=await api('/api/ai/run',{});const msg=j.log.join('\n');D=await api('/api/data');render();document.getElementById('runo').textContent=msg}
  catch(e){o.textContent='Could not run the check: '+e.message;b.disabled=false}}

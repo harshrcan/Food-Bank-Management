@@ -47,16 +47,78 @@ PROVIDERS += [("https://api.meta.ai/v1/chat/completions", "muse-spark-1.3"),
 PROVIDERS = list(dict.fromkeys(PROVIDERS))
 _working = {}   # remembers which provider worked
 
-SMTP_HOST = os.getenv("SMTP_HOST")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER")
-SMTP_PASS = os.getenv("SMTP_PASS")
+SMTP_HOST = (os.getenv("SMTP_HOST") or "").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT") or "587")
+SMTP_USER = (os.getenv("SMTP_USER") or "").strip()
+SMTP_PASS = (os.getenv("SMTP_PASS") or "").replace(" ", "")       # Gmail shows App Passwords with spaces
+SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME") or "Surrey Community Food Bank"
+SMTP_SECURITY = (os.getenv("SMTP_SECURITY") or ("ssl" if SMTP_PORT == 465 else "starttls")).lower()
 
 
 def smtp_ready():
     """True only if real SMTP details are filled in (not the .env.example placeholders)."""
     vals = [SMTP_HOST, SMTP_USER, SMTP_PASS]
-    return all(vals) and not any(v.startswith("your") or "yourteam" in v for v in vals)
+    return all(vals) and not any(v.lower().startswith("your") or "yourteam" in v.lower() for v in vals)
+
+
+def is_real_address(addr):
+    """Made-up test accounts (.test, .example, example.com) are logged but never emailed."""
+    addr = addr.lower()
+    return not (addr.endswith((".test", ".example", ".invalid"))
+                or addr.split("@")[-1] in ("example.com", "example.org", "example.net"))
+
+
+def explain_smtp_error(e):
+    """Turns mail-server errors into a plain fix."""
+    if isinstance(e, smtplib.SMTPAuthenticationError):
+        return ("The mail server rejected the login. For Gmail, SMTP_PASS must be a 16-letter App Password "
+                "(myaccount.google.com/apppasswords), not your normal password, and SMTP_USER must be that Gmail address.")
+    if isinstance(e, smtplib.SMTPRecipientsRefused):
+        return "The mail server refused the recipient address."
+    if isinstance(e, (OSError, smtplib.SMTPConnectError, smtplib.SMTPServerDisconnected)):
+        return f"Could not reach the mail server {SMTP_HOST}:{SMTP_PORT} ({e.__class__.__name__}). Check SMTP_HOST, SMTP_PORT and your internet."
+    return f"{e.__class__.__name__}: {str(e)[:150]}"
+
+
+def smtp_connect():
+    """Opens one logged-in connection to the mail server (reused for every email in a batch)."""
+    if SMTP_SECURITY == "ssl":
+        s = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20)
+    else:
+        s = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20)
+        if SMTP_SECURITY == "starttls":
+            s.starttls()
+    s.login(SMTP_USER, SMTP_PASS)
+    return s
+
+
+def send_emails(batch):
+    """batch: list of (to_address, subject, body). Returns a list of (status, error) in the same order."""
+    if not batch:
+        return []
+    try:
+        server = smtp_connect()
+    except Exception as e:
+        err = explain_smtp_error(e)
+        return [("Failed", err)] * len(batch)
+    results = []
+    try:
+        for to, subject, body in batch:
+            msg = EmailMessage()
+            msg["From"] = f"{SMTP_FROM_NAME} <{SMTP_USER}>"
+            msg["To"], msg["Subject"] = to, subject
+            msg.set_content(body + "\n\n--\nSent automatically by the Surrey Community Food Bank system.")
+            try:
+                server.send_message(msg)
+                results.append(("Sent", None))
+            except Exception as e:
+                results.append(("Failed", explain_smtp_error(e)))
+    finally:
+        try:
+            server.quit()
+        except Exception:
+            pass
+    return results
 
 
 # ---------------- demo date ----------------
@@ -167,29 +229,43 @@ def shift_volunteers(cur, until):
 
 
 def send_alert(cur, people, alert_id, subject, body, written_by, mode, dry, log):
+    """Emails every real address in one connection, and records every recipient in Email_Log."""
+    to_send = [c for c in people if smtp_ready() and is_real_address(c["Email"]) and not dry]
+    results = dict(zip([c["User_ID"] for c in to_send], send_emails([(c["Email"], subject, body) for c in to_send])))
     for c in people:
-        status = "Logged only"
-        addr = c["Email"].lower()
-        real_address = not (addr.endswith((".test", ".example", ".invalid"))                # never email made-up test accounts
-                            or addr.split("@")[-1] in ("example.com", "example.org", "example.net"))
-        if smtp_ready() and real_address and not dry:
-            try:
-                msg = EmailMessage()
-                msg["From"], msg["To"], msg["Subject"] = SMTP_USER, c["Email"], subject
-                msg.set_content(body)
-                with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as s:
-                    s.starttls(); s.login(SMTP_USER, SMTP_PASS); s.send_message(msg)
-                status = "Sent"
-            except Exception as e:
-                status = "Failed"; log.append(f"Email to {c['Email']} failed: {str(e)[:150]}")
+        status, err = results.get(c["User_ID"], ("Logged only", None))
+        if err and not log_once.get(err):
+            log_once[err] = True
+            log.append(f"  Email problem: {err}")
         if not dry:
             cur.execute("""INSERT INTO Email_Log (Alert_ID,To_User_ID,To_Email,Subject,Body,Written_By,Run_Mode,Status)
                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
                         (alert_id, c["User_ID"], c["Email"], subject, body, written_by, mode, status))
         log.append(f"Email to {c['Name']} ({c['Email']}): {status} - {subject}")
-        if status == "Logged only" and not dry and not log_once.get("smtp"):
-            log_once["smtp"] = True
-            log.append("  (Saved in Email_Log only. Add your Gmail App Password to .env to really send emails.)")
+    if not smtp_ready() and not dry and not log_once.get("smtp"):
+        log_once["smtp"] = True
+        log.append("  (Saved in Email_Log only. Add SMTP_USER and SMTP_PASS to .env to really send emails.)")
+
+
+def send_test_email():
+    """Sends a test email to every coordinator, so you can confirm real sending works."""
+    log = []
+    log_once.clear()
+    if not smtp_ready():
+        return {"ok": False, "log": ["Email is not set up. Put your Gmail address in SMTP_USER and a Gmail App Password "
+                                     "in SMTP_PASS in .env, then restart the app."]}
+    con = connect()
+    cur = con.cursor(dictionary=True, buffered=True)
+    try:
+        people = coordinators(cur)
+        body = (f"Hi {', '.join(p['Name'] for p in people)},\n\nThis is a test email from the Food Bank system, sent "
+                f"{dt.datetime.now():%Y-%m-%d %H:%M}. If you can read this, alert emails are working.\n\n"
+                "You will get emails like this when a pickup is missed or delayed, and when food is about to expire.")
+        send_alert(cur, people, None, "[Food Bank] Test email: alerts are working", body, "Template", "Manual", False, log)
+        con.commit()
+    finally:
+        con.close()
+    return {"ok": not any("Email problem" in x for x in log), "log": log}
 
 
 # ---------------- Algorithm 3: expiry ----------------
@@ -500,5 +576,8 @@ def insights(question=None):
 
 
 if __name__ == "__main__":
-    out = run_check(mode="Manual", dry="--dry-run" in sys.argv)
+    if "--test-email" in sys.argv:
+        out = send_test_email()
+    else:
+        out = run_check(mode="Manual", dry="--dry-run" in sys.argv)
     print("\n".join(out["log"]))

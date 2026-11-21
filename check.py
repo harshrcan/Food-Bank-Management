@@ -63,9 +63,16 @@ else:
     except Exception as e:
         show(False, "AI did not answer", str(e)[:300] + "  (If it says 429, wait one minute: free tier limit.)")
 
-show(True if ai_engine.smtp_ready() else None,
-     "Email sending is set up" if ai_engine.smtp_ready() else "Email not set up (alerts are saved in Email_Log only)",
-     "Optional: put a Gmail address and App Password in SMTP_USER / SMTP_PASS in .env.")
+if ai_engine.smtp_ready():
+    try:
+        ai_engine.smtp_connect().quit()
+        show(True, f"Email login works ({ai_engine.SMTP_USER} via {ai_engine.SMTP_HOST}). "
+                   "Send a test with: python ai_engine.py --test-email")
+    except Exception as e:
+        show(False, "Email login failed", ai_engine.explain_smtp_error(e))
+else:
+    show(None, "Email not set up (alerts are saved in Email_Log only)",
+         "Put a Gmail address in SMTP_USER and a Gmail App Password in SMTP_PASS in .env.")
 
 print("\nReady for the demo." if ok_all else "\nFix the FAIL lines above, then run this again.")
 sys.exit(0 if ok_all else 1)
