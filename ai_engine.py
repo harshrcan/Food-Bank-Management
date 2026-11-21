@@ -169,7 +169,9 @@ def shift_volunteers(cur, until):
 def send_alert(cur, people, alert_id, subject, body, written_by, mode, dry, log):
     for c in people:
         status = "Logged only"
-        real_address = not c["Email"].lower().endswith((".test", ".example", ".invalid"))   # never email fake test accounts
+        addr = c["Email"].lower()
+        real_address = not (addr.endswith((".test", ".example", ".invalid"))                # never email made-up test accounts
+                            or addr.split("@")[-1] in ("example.com", "example.org", "example.net"))
         if smtp_ready() and real_address and not dry:
             try:
                 msg = EmailMessage()
@@ -191,62 +193,154 @@ def send_alert(cur, people, alert_id, subject, body, written_by, mode, dry, log)
 
 
 # ---------------- Algorithm 3: expiry ----------------
+RISK_HIGH_DAYS = 3        # 3 days or less left: give it out in the next hampers
+WATCH_DAYS = 7            # look this far ahead for food that cannot all be given out in time
+OUTFLOW_DAYS = 28         # recent hamper history used to estimate how fast each category goes out
+SUPPLY_DAYS_MIN = 7       # less than a week of supply that will still be good next week: declining
+
+
+def category_rates(cur):
+    """Units given out per day for each category, over the last OUTFLOW_DAYS days."""
+    cur.execute(use_demo_dates(f"""SELECT i.Category_ID, SUM(di.Quantity) qty FROM Distribution d
+                   JOIN Distribution_Item di USING (Distribution_ID) JOIN Inventory_Item i USING (Item_ID)
+                   WHERE d.Status IN ('Fulfilled','Delayed')
+                   AND d.Pickup_Date_Time BETWEEN NOW() - INTERVAL {OUTFLOW_DAYS} DAY AND NOW()
+                   GROUP BY i.Category_ID""", cur))
+    return {r["Category_ID"]: float(r["qty"]) / OUTFLOW_DAYS for r in cur.fetchall()}
+
+
+def declining_categories(cur, rates):
+    """Categories running low: the stock that will STILL be good a week from now would last less than
+    SUPPLY_DAYS_MIN days at the current pace. (Plenty of food that all expires this week is not real supply.)"""
+    cur.execute(use_demo_dates("""SELECT c.Category_ID, c.Name,
+                   COALESCE(SUM(IF(i.Expiration_Date >= CURDATE(), i.Quantity, 0)), 0) stock_now,
+                   COALESCE(SUM(IF(i.Expiration_Date > CURDATE() + INTERVAL 7 DAY, i.Quantity, 0)), 0) stock_next_week
+                   FROM Category c LEFT JOIN Inventory_Item i ON i.Category_ID=c.Category_ID AND i.Status='Available'
+                   GROUP BY c.Category_ID, c.Name""", cur))
+    out = []
+    for r in cur.fetchall():
+        rate = rates.get(r["Category_ID"], 0)
+        if not rate:
+            continue
+        days = float(r["stock_next_week"]) / rate
+        if days < SUPPLY_DAYS_MIN:
+            out.append({"category": r["Name"], "days_of_supply_next_week": round(days, 1),
+                        "why": (f"only {float(r['stock_next_week']):g} of {float(r['stock_now']):g} units will still be good "
+                                f"in a week, about {days:.0f} days of supply at {rate:.1f} given out per day")})
+    return out
+
+
 def expiry_check(cur, mode, dry, log):
+    """Algorithm 3. For every item in stock: expired, HIGH (3 days or less), WATCH (the category cannot
+    give it all out before it expires, at the current pace) or OK. Also flags declining categories."""
     day = today(cur)
     cur.execute("""SELECT i.Item_ID, i.Name, i.Quantity, i.Unit, i.Expiration_Date, i.Category_ID, c.Name AS Category
                    FROM Inventory_Item i JOIN Category c USING (Category_ID)
-                   WHERE i.Status='Available' AND i.Quantity > 0""")
-    expired, high = [], []
-    for it in cur.fetchall():
+                   WHERE i.Status='Available' AND i.Quantity > 0
+                   ORDER BY i.Category_ID, i.Expiration_Date, i.Item_ID""")
+    rows = cur.fetchall()
+    rates = category_rates(cur)
+    cur.execute(use_demo_dates("""SELECT DISTINCT Item_ID FROM Alert WHERE Type='Expiry Risk'
+                   AND Date_Time >= NOW() - INTERVAL 24 HOUR""", cur))
+    alerted = {r["Item_ID"] for r in cur.fetchall()}
+
+    expired, high, watch, ok, new_high = [], [], [], [], []
+    ahead = {}                              # units of this category that expire before (or with) this item
+    for it in rows:
         left = (it["Expiration_Date"] - day).days
+        it["days_left"] = left
         if left < 0:
             expired.append(it)
-            if not dry:
-                cur.execute("UPDATE Inventory_Item SET Status='Expired', Risk_Level='OK' WHERE Item_ID=%s", (it["Item_ID"],))
-                cur.execute("""INSERT IGNORE INTO Expiry_Record (Item_ID,Quantity,Expired_On,Category_ID,Recorded_At)
-                               VALUES (%s,%s,%s,%s,%s)""",
-                            (it["Item_ID"], it["Quantity"], it["Expiration_Date"], it["Category_ID"], now(cur)))
-                log.append(f"  Removed from inventory: {it['Name']} ({it['Quantity']:g} {it['Unit']}), expired {it['Expiration_Date']}")
-        elif left <= 3:
-            it["days_left"] = left
-            if not dry:
-                cur.execute("UPDATE Inventory_Item SET Risk_Level='HIGH' WHERE Item_ID=%s", (it["Item_ID"],))
-            cur.execute(use_demo_dates("""SELECT 1 FROM Alert WHERE Type='Expiry Risk' AND Item_ID=%s
-                           AND Date_Time >= NOW() - INTERVAL 24 HOUR""", cur), (it["Item_ID"],))
-            if not cur.fetchall():
-                high.append(it)
-        elif not dry:
-            cur.execute("UPDATE Inventory_Item SET Risk_Level='OK' WHERE Item_ID=%s", (it["Item_ID"],))
+            continue
+        ahead[it["Category_ID"]] = ahead.get(it["Category_ID"], 0) + float(it["Quantity"])
+        can_give = rates.get(it["Category_ID"], 0) * (left + 1)          # what we can hand out before it expires
+        if left <= RISK_HIGH_DAYS:
+            high.append(it)
+            if it["Item_ID"] not in alerted:
+                new_high.append(it)
+        elif left <= WATCH_DAYS and ahead[it["Category_ID"]] > can_give:
+            watch.append(it)
+        else:
+            ok.append(it)
 
-    log.append(f"Expiry check: {len(expired)} items moved to the expiry table, {len(high)} new at-risk items")
-    if not high:
-        return {"expired": len(expired), "at_risk": 0}
+    if not dry:
+        for it in expired:
+            cur.execute("""INSERT IGNORE INTO Expiry_Record (Item_ID,Quantity,Expired_On,Category_ID,Recorded_At)
+                           VALUES (%s,%s,%s,%s,%s)""",
+                        (it["Item_ID"], it["Quantity"], it["Expiration_Date"], it["Category_ID"], now(cur)))
+        for level, group in (("Expired", expired), ("HIGH", high), ("WATCH", watch), ("OK", ok)):
+            ids = [it["Item_ID"] for it in group]
+            for i in range(0, len(ids), 500):
+                chunk = ids[i:i + 500]
+                marks = ",".join(["%s"] * len(chunk))
+                if level == "Expired":
+                    cur.execute(f"UPDATE Inventory_Item SET Status='Expired', Risk_Level='OK' WHERE Item_ID IN ({marks})", chunk)
+                else:
+                    cur.execute(f"UPDATE Inventory_Item SET Risk_Level=%s WHERE Item_ID IN ({marks})", [level] + chunk)
+    for it in expired[:10]:
+        log.append(f"  Removed from inventory: {it['Name']} ({it['Quantity']:g} {it['Unit']}), expired {it['Expiration_Date']}")
+    if len(expired) > 10:
+        log.append(f"  ...and {len(expired) - 10} more (see the Expiry section)")
+
+    declining = declining_categories(cur, rates)
+    new_declining = []
+    for d in declining:
+        cur.execute(use_demo_dates("""SELECT 1 FROM Alert WHERE Type='Inventory Trend' AND Message LIKE %s
+                       AND Date_Time >= NOW() - INTERVAL 24 HOUR""", cur), (f"Declining stock: {d['category']}%",))
+        if not cur.fetchall():
+            new_declining.append(d)
+    log.append(f"Expiry check: {len(expired)} expired and removed, {len(high)} HIGH risk ({len(new_high)} new), "
+               f"{len(watch)} on WATCH (may expire before they can be given out), {len(declining)} declining categories")
+    for d in declining:
+        log.append(f"  Declining: {d['category']}: {d['why']}")
+    if not new_high and not new_declining:
+        return {"expired": len(expired), "at_risk": 0, "watch": len(watch)}
 
     alert_id = None
-    for it in high:
-        if not dry:
+    if not dry:
+        for it in new_high:
             cur.execute("INSERT INTO Alert (Type, Item_ID, Message, Date_Time) VALUES ('Expiry Risk', %s, %s, %s)",
-                        (it["Item_ID"], f"{it['Name']}: {it['Quantity']} {it['Unit']} expires {it['Expiration_Date']}", now(cur)))
+                        (it["Item_ID"], f"{it['Name']}: {it['Quantity']:g} {it['Unit']} expires {it['Expiration_Date']}", now(cur)))
+            alert_id = alert_id or cur.lastrowid
+        for d in new_declining:
+            cur.execute("INSERT INTO Alert (Type, Message, Date_Time) VALUES ('Inventory Trend', %s, %s)",
+                        (f"Declining stock: {d['category']}: {d['why']}", now(cur)))
             alert_id = alert_id or cur.lastrowid
 
-    rows = sorted([{"item": i["Name"], "category": i["Category"], "qty": f"{i['Quantity']:g} {i['Unit']}",
-                    "expires": i["Expiration_Date"], "days_left": i["days_left"]} for i in high],
-                  key=lambda r: r["days_left"])
-    ai = muse_email("Write ONE email to the food bank coordinators and the volunteers on upcoming shifts, listing "
-                    "these at-risk items, most urgent first, and ask for them to go out in the next hampers.", rows, log)
+    urgent = sorted(new_high, key=lambda i: (i["days_left"], -float(i["Quantity"])))
+    rows_out = [{"item": i["Name"], "category": i["Category"], "qty": f"{i['Quantity']:g} {i['Unit']}",
+                 "expires": i["Expiration_Date"], "days_left": i["days_left"]} for i in urgent[:40]]
+    watch_by_cat = {}
+    for it in watch:
+        watch_by_cat[it["Category"]] = watch_by_cat.get(it["Category"], 0) + 1
+    data = {"new_high_risk_count": len(new_high), "most_urgent": rows_out, "watch_items_by_category": watch_by_cat,
+            "declining_categories": new_declining}
+    ai = muse_email("Write ONE email to the food bank coordinators and the volunteers on upcoming shifts. List the most "
+                    "urgent at-risk items first (they expire within 3 days) and ask for them to go out in the next hampers. "
+                    "Then briefly mention the WATCH counts per category and any declining categories.", data, log)
     if ai:
         subject, body, by = ai[0], ai[1], "AI"
     else:
         by = "Template"
-        subject = f"[Food Bank] {len(high)} items expiring within 3 days - priority distribution"
-        body = "Hi team,\n\nThese items need to go out in the next hampers:\n\n" + "\n".join(
-            f"- {r['item']} ({r['qty']}), expires {r['expires']}, {r['days_left']} day(s) left" for r in rows) + \
-            "\n\nAutomated alert from the Food Bank system."
+        subject = (f"[Food Bank] {len(new_high)} items expiring within 3 days - priority distribution" if new_high
+                   else "[Food Bank] Declining stock")
+        lines = [f"- {r['item']} ({r['qty']}), expires {r['expires']}, {r['days_left']} day(s) left" for r in rows_out[:30]]
+        if len(new_high) > 30:
+            lines.append(f"...and {len(new_high) - 30} more (see the Inventory page, HIGH risk)")
+        body = "Hi team,\n\n"
+        if lines:
+            body += "These items need to go out in the next hampers:\n\n" + "\n".join(lines) + "\n\n"
+        if watch_by_cat:
+            body += ("May expire before they can be given out (WATCH): " +
+                     ", ".join(f"{c} {n}" for c, n in sorted(watch_by_cat.items(), key=lambda x: -x[1])) + ".\n\n")
+        if new_declining:
+            body += "Declining stock:\n" + "\n".join(f"- {d['category']}: {d['why']}" for d in new_declining) + "\n\n"
+        body += "Automated alert from the Food Bank system."
     # project requirement: coordinators AND volunteers on upcoming shifts before these items expire
-    until = dt.datetime.combine(max(i["Expiration_Date"] for i in high), dt.time.max)
-    people = {p["User_ID"]: p for p in coordinators(cur) + shift_volunteers(cur, until)}
+    last = max([i["Expiration_Date"] for i in new_high] or [day + dt.timedelta(days=RISK_HIGH_DAYS)])
+    people = {p["User_ID"]: p for p in coordinators(cur) + shift_volunteers(cur, dt.datetime.combine(last, dt.time.max))}
     send_alert(cur, list(people.values()), alert_id, subject, body, by, mode, dry, log)
-    return {"expired": len(expired), "at_risk": len(high)}
+    return {"expired": len(expired), "at_risk": len(new_high), "watch": len(watch)}
 
 
 # ---------------- Algorithm 4: missed / delayed pickups ----------------
@@ -254,7 +348,8 @@ def pickup_check(cur, mode, dry, log):
     cur_now = now(cur)
     cur.execute(use_demo_dates("""SELECT d.Distribution_ID, d.Pickup_Date_Time, d.Status, r.Name, r.Phone
                    FROM Distribution d JOIN Recipient r USING (Recipient_ID)
-                   WHERE d.Status IN ('Scheduled','Delayed') AND DATE(d.Pickup_Date_Time) <= CURDATE()""", cur))
+                   WHERE d.Status IN ('Scheduled','Delayed') AND DATE(d.Pickup_Date_Time) <= CURDATE()
+                   AND d.Pickup_Date_Time >= CURDATE() - INTERVAL 7 DAY      -- older pickups were already closed by volunteers""", cur))
     for d in cur.fetchall():
         new = None
         if d["Pickup_Date_Time"].date() < cur_now.date():
@@ -267,7 +362,7 @@ def pickup_check(cur, mode, dry, log):
                 # put the reserved food back on the shelf (items that expired meanwhile stay expired)
                 cur.execute("""UPDATE Inventory_Item i JOIN Distribution_Item di ON di.Item_ID=i.Item_ID
                                SET i.Quantity=i.Quantity+di.Quantity,
-                                   i.Status=IF(i.Status='Expired','Expired','Available')
+                                   i.Status=IF(i.Status='Expired','Expired','Available')   -- expired food is then removed by the expiry check
                                WHERE di.Distribution_ID=%s""", (d["Distribution_ID"],))
                 cur.execute("""UPDATE Expiry_Record e JOIN Distribution_Item di ON di.Item_ID=e.Item_ID
                                SET e.Quantity=e.Quantity+di.Quantity WHERE di.Distribution_ID=%s""",

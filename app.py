@@ -9,12 +9,13 @@ The AI service is only called from this server, so the API key never reaches the
 The AI check also runs automatically every 6 hours while the app is running.
 """
 import os, threading, time, decimal, datetime as dt
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, session
 import mysql.connector
 import ai_engine, setup_db
 
 app = Flask(__name__, static_folder="static")
 app.json.sort_keys = False      # keep table columns in the order the queries define
+app.secret_key = os.getenv("SECRET_KEY") or os.urandom(24)     # signs the login cookie (logins reset when the app restarts)
 EVERY_HOURS = float(os.getenv("AI_EVERY_HOURS", "6"))           # full check (expiry + pickups)
 PICKUP_MINUTES = float(os.getenv("PICKUP_CHECK_MINUTES", "15"))  # quick missed/delayed pickup check
 state = {"last_run": None, "next_run": None, "running": False}
@@ -32,12 +33,12 @@ QUERIES = {
         (SELECT COUNT(*) FROM Expiry_Record) expired,
         (SELECT COUNT(*) FROM Distribution WHERE Status='Fulfilled') hampers,
         (SELECT COUNT(*) FROM Email_Log) emails""",
-    "donations": """SELECT d.Donation_ID id, d.Date_Time date, dn.Name donor, dn.Donor_Type type, v.Name collected,
+    "donations": """SELECT d.Donation_ID id, d.Date_Time date, DATE_FORMAT(d.Date_Time,'%Y-%m-%d') day, dn.Name donor, dn.Donor_Type type, v.Name collected,
         COUNT(i.Item_ID) n, GROUP_CONCAT(CONCAT(i.Name,' x',TRIM(TRAILING '.00' FROM i.Quantity),' ',i.Unit)
         ORDER BY i.Name SEPARATOR '||') items
         FROM Donation d JOIN Donor dn USING(Donor_ID) LEFT JOIN Volunteer v ON v.Volunteer_ID=d.Collected_By_Volunteer_ID
         LEFT JOIN Inventory_Item i ON i.Donation_ID=d.Donation_ID GROUP BY d.Donation_ID ORDER BY d.Date_Time DESC""",
-    "hampers": """SELECT ds.Distribution_ID id, ds.Pickup_Date_Time date, ds.Status status, r.Name recipient,
+    "hampers": """SELECT ds.Distribution_ID id, ds.Pickup_Date_Time date, DATE_FORMAT(ds.Pickup_Date_Time,'%Y-%m-%d') day, ds.Status status, r.Name recipient,
         r.Household_Size hh, r.Food_Preferences prefs, v.Name given,
         GROUP_CONCAT(CONCAT(i.Name,' x',TRIM(TRAILING '.00' FROM di.Quantity),' ',i.Unit) SEPARATOR '||') items
         FROM Distribution ds JOIN Recipient r USING(Recipient_ID) LEFT JOIN Volunteer v ON v.Volunteer_ID=ds.Given_By_Volunteer_ID
@@ -45,7 +46,8 @@ QUERIES = {
         GROUP BY ds.Distribution_ID ORDER BY ds.Pickup_Date_Time DESC""",
     "inventory": """SELECT i.Item_ID ID, i.Name Item, c.Name Category, i.Quantity Qty, i.Unit, i.Expiration_Date Expires,
         DATEDIFF(i.Expiration_Date,CURDATE()) DaysLeft,
-        CASE WHEN i.Expiration_Date<CURDATE() THEN 'EXPIRED' WHEN DATEDIFF(i.Expiration_Date,CURDATE())<=3 THEN 'HIGH' ELSE 'OK' END Risk,
+        CASE WHEN i.Expiration_Date<CURDATE() THEN 'EXPIRED' WHEN DATEDIFF(i.Expiration_Date,CURDATE())<=3 THEN 'HIGH'
+             ELSE i.Risk_Level END Risk,
         dn.Name `Donated By`
         FROM Inventory_Item i JOIN Category c USING(Category_ID) JOIN Donation d USING(Donation_ID) JOIN Donor dn USING(Donor_ID)
         WHERE i.Status='Available' AND i.Quantity>0 ORDER BY i.Expiration_Date, i.Name""",
@@ -189,10 +191,135 @@ def login():
             return jsonify({"ok": False, "msg": "This account is disabled."}), 403
         cur.execute("UPDATE User_Account SET Last_Login=NOW() WHERE User_ID=%s", (u["User_ID"],))
         con.commit()
+        session.clear()
+        session["user_id"], session["role"] = u["User_ID"], u["Role"]
         return jsonify({"ok": True, "user_id": u["User_ID"], "role": u["Role"],
                         "msg": f"Login OK. Role: {u['Role']}."})
     finally:
         con.close()
+
+
+@app.post("/api/logout")
+def logout():
+    session.clear()
+    return jsonify({"ok": True})
+
+
+def current_user(cur):
+    """The logged-in donor or recipient (from the signed login cookie), or None."""
+    uid = session.get("user_id")
+    if not uid:
+        return None
+    cur.execute("""SELECT u.User_ID, u.Email, u.Role, r.Recipient_ID, r.Name rname, r.Household_Size, r.Phone rphone,
+                   r.Food_Preferences, r.Emergency_Contact, r.Approval_Status, dn.Donor_ID, dn.Name dname, dn.Phone dphone,
+                   dn.Donor_Type FROM User_Account u LEFT JOIN Recipient r ON r.User_ID=u.User_ID
+                   LEFT JOIN Donor dn ON dn.User_ID=u.User_ID WHERE u.User_ID=%s""", (uid,))
+    return cur.fetchone()
+
+
+def date_range():
+    """Reads ?from=YYYY-MM-DD&to=YYYY-MM-DD (both optional)."""
+    try:
+        f = dt.date.fromisoformat(request.args["from"]) if request.args.get("from") else dt.date(2000, 1, 1)
+        t = dt.date.fromisoformat(request.args["to"]) if request.args.get("to") else dt.date(2100, 1, 1)
+    except ValueError:
+        raise ValueError("Dates must look like 2026-11-20.")
+    return f, t
+
+
+@app.get("/api/my/history")
+def my_history():
+    """A logged-in recipient sees only THEIR hampers; a donor sees only THEIR donations. Search by date
+    (and by category for donors). Nobody can pass someone else's ID: the account comes from the login cookie."""
+    con = ai_engine.connect(); cur = con.cursor(dictionary=True, buffered=True)
+    try:
+        u = current_user(cur)
+        if not u:
+            return jsonify({"ok": False, "error": "Please log in as a recipient or donor."}), 401
+        try:
+            f, t = date_range()
+        except ValueError as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
+        if u["Role"] == "Recipient":
+            cur.execute("""SELECT ds.Distribution_ID id, ds.Pickup_Date_Time date, ds.Status status, v.Name given_by,
+                           GROUP_CONCAT(CONCAT(i.Name,' x',TRIM(TRAILING '.00' FROM di.Quantity),' ',i.Unit) SEPARATOR '||') items
+                           FROM Distribution ds LEFT JOIN Volunteer v ON v.Volunteer_ID=ds.Given_By_Volunteer_ID
+                           LEFT JOIN Distribution_Item di USING(Distribution_ID) LEFT JOIN Inventory_Item i USING(Item_ID)
+                           WHERE ds.Recipient_ID=%s AND DATE(ds.Pickup_Date_Time) BETWEEN %s AND %s
+                           GROUP BY ds.Distribution_ID ORDER BY ds.Pickup_Date_Time DESC""", (u["Recipient_ID"], f, t))
+            rows = [{k: clean(v) for k, v in r.items()} for r in cur.fetchall()]
+            return jsonify({"ok": True, "role": "Recipient", "rows": rows,
+                            "profile": {"Name": u["rname"], "Email": u["Email"], "Phone": u["rphone"],
+                                        "Household size": u["Household_Size"], "Dietary needs": u["Food_Preferences"],
+                                        "Emergency contact": u["Emergency_Contact"], "Status": u["Approval_Status"]}})
+        if u["Role"] == "Donor":
+            cat = request.args.get("category") or None
+            cur.execute("""SELECT d.Donation_ID id, d.Date_Time date, v.Name collected_by,
+                           GROUP_CONCAT(CONCAT(i.Name,' x',TRIM(TRAILING '.00' FROM i.Original_Quantity),' ',i.Unit,' (',c.Name,')')
+                                        ORDER BY i.Name SEPARATOR '||') items
+                           FROM Donation d LEFT JOIN Volunteer v ON v.Volunteer_ID=d.Collected_By_Volunteer_ID
+                           JOIN Inventory_Item i USING(Donation_ID) JOIN Category c USING(Category_ID)
+                           WHERE d.Donor_ID=%s AND DATE(d.Date_Time) BETWEEN %s AND %s AND (%s IS NULL OR c.Name=%s)
+                           GROUP BY d.Donation_ID ORDER BY d.Date_Time DESC""", (u["Donor_ID"], f, t, cat, cat))
+            rows = [{k: clean(v) for k, v in r.items()} for r in cur.fetchall()]
+            return jsonify({"ok": True, "role": "Donor", "rows": rows,
+                            "profile": {"Name": u["dname"], "Email": u["Email"], "Phone": u["dphone"], "Type": u["Donor_Type"]}})
+        return jsonify({"ok": False, "error": "This page is for recipients and donors. Staff use the other pages."}), 403
+    finally:
+        con.close()
+
+
+@app.get("/api/search/distributions")
+def search_distributions():
+    """Volunteer search: distribution records by recipient name and/or date range."""
+    name = (request.args.get("recipient") or "").strip()
+    try:
+        f, t = date_range()
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    con = ai_engine.connect(); cur = con.cursor(dictionary=True, buffered=True)
+    try:
+        cur.execute("""SELECT ds.Distribution_ID id, ds.Pickup_Date_Time date, ds.Status status, r.Name recipient,
+                       COUNT(di.Item_ID) item_lines FROM Distribution ds JOIN Recipient r USING(Recipient_ID)
+                       LEFT JOIN Distribution_Item di USING(Distribution_ID)
+                       WHERE r.Name LIKE %s AND ds.Pickup_Date_Time >= %s AND ds.Pickup_Date_Time < %s + INTERVAL 1 DAY
+                       GROUP BY ds.Distribution_ID ORDER BY ds.Pickup_Date_Time DESC LIMIT 500""", (f"%{name}%", f, t))
+        return jsonify({"ok": True, "rows": [{k: clean(v) for k, v in r.items()} for r in cur.fetchall()]})
+    finally:
+        con.close()
+
+
+@app.post("/api/distribution/<int:did>/status")
+def mark_pickup(did):
+    """A volunteer marks a scheduled pickup Fulfilled, Missed or Delayed. Missed or Delayed emails the
+    coordinators straight away (project requirement)."""
+    new = (request.get_json(silent=True) or {}).get("status")
+    if new not in ("Fulfilled", "Missed", "Delayed"):
+        return jsonify({"ok": False, "error": "Status must be Fulfilled, Missed or Delayed."}), 400
+    if session.get("role") in ("Recipient", "Donor"):
+        return jsonify({"ok": False, "error": "Only volunteers and coordinators can change pickups."}), 403
+    con = ai_engine.connect(); cur = con.cursor(dictionary=True, buffered=True)
+    try:
+        cur.execute("SELECT d.Status, r.Name FROM Distribution d JOIN Recipient r USING(Recipient_ID) WHERE Distribution_ID=%s", (did,))
+        row = cur.fetchone()
+        if not row:
+            return jsonify({"ok": False, "error": "No such pickup."}), 404
+        if row["Status"] not in ("Scheduled", "Delayed") or row["Status"] == new:
+            return jsonify({"ok": False, "error": f"This pickup is already {row['Status']}."}), 409
+        cur.execute("UPDATE Distribution SET Status=%s WHERE Distribution_ID=%s", (new, did))
+        if new == "Missed":      # the reserved food goes back on the shelf
+            cur.execute("""UPDATE Inventory_Item i JOIN Distribution_Item di ON di.Item_ID=i.Item_ID
+                           SET i.Quantity=i.Quantity+di.Quantity, i.Status=IF(i.Status='Expired','Expired','Available')
+                           WHERE di.Distribution_ID=%s""", (did,))
+        con.commit()
+    finally:
+        con.close()
+    msg = f"{row['Name']}'s pickup marked {new}."
+    if new in ("Missed", "Delayed"):
+        res = do_run("Manual", pickups_only=True)
+        sent = [x for x in res["log"] if x.startswith("Email to")]
+        msg += f" Alert emailed to the coordinators ({len(sent)} emails)." if sent else " (Alert already sent.)"
+    return jsonify({"ok": True, "msg": msg})
 
 
 # ---------------- reports (2 types, monthly or annual) ----------------

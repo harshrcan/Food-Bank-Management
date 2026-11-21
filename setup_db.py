@@ -40,6 +40,26 @@ def check_password(pw, stored):
         return False
 
 
+def catch_up(cur):
+    """The test data is written as of Nov 20, 2026. If it is loaded later, act as if the system ran
+    in between: past pickups were handed out, and food that expired before yesterday was removed.
+    Food that expired yesterday or today is left for the live AI check to find."""
+    cur.execute("""UPDATE foodbank.Distribution SET Status='Fulfilled'
+                   WHERE Status='Scheduled' AND DATE(Pickup_Date_Time) < CURDATE()""")
+    pickups = cur.rowcount
+    cur.execute("""INSERT INTO foodbank.Expiry_Record (Item_ID, Quantity, Expired_On, Category_ID, Recorded_At)
+                   SELECT Item_ID, Quantity, Expiration_Date, Category_ID, TIMESTAMP(Expiration_Date + INTERVAL 1 DAY, '06:00:00')
+                   FROM foodbank.Inventory_Item
+                   WHERE Status='Available' AND Quantity > 0 AND Expiration_Date < CURDATE() - INTERVAL 1 DAY""")
+    expired = cur.rowcount
+    cur.execute("""UPDATE foodbank.Inventory_Item SET Status='Expired'
+                   WHERE Status='Available' AND Quantity > 0 AND Expiration_Date < CURDATE() - INTERVAL 1 DAY""")
+    if pickups or expired:
+        return (f"Brought the test data up to today: {pickups} past pickups marked fulfilled, "
+                f"{expired} long-expired items moved to the expiry section.")
+    return ""
+
+
 def statements(path):
     """Split a .sql file into single statements (skips comments)."""
     buf = []
@@ -73,6 +93,10 @@ def main(quiet=False):
             say(f"Loaded database/{name} ({n} statements)")
         cur.execute("UPDATE foodbank.User_Account SET Password_Hash=%s", (hash_password(TEST_PASSWORD),))
         con.commit()
+        caught_up = catch_up(cur)
+        con.commit()
+        if caught_up:
+            say(caught_up)
         cur.execute("SELECT COUNT(*) FROM foodbank.Inventory_Item")
         items = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM foodbank.User_Account")
