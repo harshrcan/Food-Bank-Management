@@ -23,7 +23,7 @@ def hash_password(pw):
     """bcrypt if installed (what the schema expects), otherwise Werkzeug's built-in hash."""
     try:
         import bcrypt
-        return bcrypt.hashpw(pw.encode(), bcrypt.gensalt(10)).decode()
+        return bcrypt.hashpw(pw.encode(), bcrypt.gensalt(12))   # SRS 3.2.2: work factor 12 or more.decode()
     except ImportError:
         from werkzeug.security import generate_password_hash
         return generate_password_hash(pw)

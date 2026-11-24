@@ -197,8 +197,8 @@ def email_test():
     """Manual trigger to verify SMTP credentials from .env."""
     if session.get("role") != "Coordinator":
         return jsonify({"ok": False, "error": "Coordinators only."}), 403
-    ok, msg = ai_engine.send_test_email()
-    return jsonify({"ok": ok, "msg": msg}), (200 if ok else 400)
+    res = ai_engine.send_test_email()          # returns {"ok": bool, "log": [lines]}
+    return jsonify({"ok": res["ok"], "msg": "\n".join(res["log"]), "log": res["log"]}), (200 if res["ok"] else 400)
 
 
 @app.post("/api/ai/insights")
