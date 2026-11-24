@@ -43,18 +43,34 @@ def main():
 
     year = dt.date.today().year
     month = dt.date.today().month
-    recip = webapp.app.test_client(); recip.post("/api/login", json={"email": r_email, "password": "Password123!"})
-    donor = webapp.app.test_client(); donor.post("/api/login", json={"email": d_email, "password": "Password123!"})
-    staff = webapp.app.test_client()
+
+    def logged_in(email):
+        c = webapp.app.test_client()
+        r = c.post("/api/login", json={"email": email, "password": "Password123!"})
+        if r.status_code != 200:
+            raise SystemExit(f"Could not log in as {email}: {r.get_json()}. Run python setup_db.py first.")
+        return c
+
+    con = ai_engine.connect(); cur = con.cursor()
+    cur.execute("SELECT u.Email FROM Coordinator c JOIN User_Account u USING(User_ID) LIMIT 1"); c_email = cur.fetchone()[0]
+    cur.execute("""SELECT u.Email FROM Volunteer v JOIN User_Account u USING(User_ID) JOIN Shift_Assignment USING(Volunteer_ID)
+                   GROUP BY v.Volunteer_ID ORDER BY COUNT(*) DESC LIMIT 1"""); v_email = cur.fetchone()[0]
+    cur.execute("SELECT Category_ID FROM Category LIMIT 1"); cat = cur.fetchone()[0]
+    con.close()
+    recip, donor, staff, vol = logged_in(r_email), logged_in(d_email), logged_in(c_email), logged_in(v_email)
     last = r_name.split()[-1]
     actions = [
-        ("Page load: viewer page (HTML)", staff, "/"),
-        ("Page load: all tables (/api/data)", staff, "/api/data"),
-        ("Search: recipient's own history by date", recip, "/api/my/history?from=2026-10-01&to=2026-11-30"),
-        ("Search: recipient's own history (all)", recip, "/api/my/history"),
-        ("Search: donor's own donations by date + category", donor, "/api/my/history?from=2026-10-01&to=2026-11-30&category=Canned%20Goods"),
-        ("Search: distributions by recipient name", staff, f"/api/search/distributions?recipient={last}"),
-        ("Search: distributions by date range", staff, "/api/search/distributions?from=2026-11-01&to=2026-11-30"),
+        ("Page load: app page (HTML)", staff, "/"),
+        ("Page load: coordinator overview", staff, "/api/dashboard"),
+        ("Page load: volunteer today", vol, "/api/dashboard"),
+        ("Page load: recipient home", recip, "/api/dashboard"),
+        ("Page load: inventory (all in stock)", staff, "/api/inventory"),
+        ("Page load: database viewer data", staff, "/api/data"),
+        ("Search: recipient's own hampers by date", recip, "/api/recipient/hampers?from=2026-10-01&to=2026-11-30"),
+        ("Search: donor's own donations by date + category", donor, f"/api/donor/donations?from=2026-10-01&to=2026-11-30&category_id={cat}"),
+        ("Search: distributions by recipient name", staff, f"/api/distributions?recipient={last}"),
+        ("Search: distributions by date range", staff, "/api/distributions?from=2026-11-01&to=2026-11-30"),
+        ("Search: inventory by category + expiry", vol, f"/api/inventory?category_id={cat}&expires_before=2026-12-01"),
         ("Report: Donation & Distribution (month)", staff, f"/api/report?type=donation&year={year}&month={month}"),
         ("Report: Donation & Distribution (year)", staff, f"/api/report?type=donation&year={year}"),
         ("Report: Inventory Waste (month)", staff, f"/api/report?type=waste&year={year}&month={month}"),
@@ -77,8 +93,11 @@ def main():
             if r.status_code != 200:
                 raise SystemExit(f"{label} failed: HTTP {r.status_code} {r.get_data(as_text=True)[:200]}")
             size = len(r.get_data())
-            if r.is_json and isinstance(r.get_json().get("rows"), list):
-                size = f"{len(r.get_json()['rows'])} rows"
+            if r.is_json:
+                j = r.get_json()
+                lists = [v for v in j.values() if isinstance(v, list)] if isinstance(j, dict) else []
+                if lists:
+                    size = f"{max(len(v) for v in lists)} rows"
         good = p95(times) < LIMIT
         ok_all &= good
         sz = size if isinstance(size, str) else f"{size / 1024:.0f} KB"

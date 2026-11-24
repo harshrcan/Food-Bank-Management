@@ -87,7 +87,7 @@ CREATE TABLE Inventory_Item (
   Expiration_Date DATE NOT NULL,
   Donation_ID     INT NOT NULL,
   Status          ENUM('Available','Reserved','Distributed','Expired') NOT NULL DEFAULT 'Available',
-  Risk_Level      ENUM('OK','HIGH') NOT NULL DEFAULT 'OK',   -- set by AI check, flagged items sort to top
+  Risk_Level      ENUM('OK','WATCH','HIGH') NOT NULL DEFAULT 'OK',   -- set by the AI check (WATCH = may expire before it can be given out)
   FOREIGN KEY (Category_ID) REFERENCES Category(Category_ID),
   FOREIGN KEY (Donation_ID) REFERENCES Donation(Donation_ID),
   INDEX idx_status_expiry (Status, Expiration_Date)
@@ -228,3 +228,14 @@ LEFT JOIN Category c ON c.Category_ID = i.Category_ID;
 -- ---------- APP USER (least privilege) ----------
 -- CREATE USER 'foodbank_app'@'localhost' IDENTIFIED BY 'change_me';
 -- GRANT SELECT, INSERT, UPDATE, DELETE ON foodbank.* TO 'foodbank_app'@'localhost';
+
+-- ---------- INDEXES (keep searches and reports fast with 1,000+ items and 200+ recipients) ----------
+CREATE INDEX idx_dist_date        ON Distribution (Pickup_Date_Time);
+CREATE INDEX idx_dist_recipient   ON Distribution (Recipient_ID, Pickup_Date_Time);
+CREATE INDEX idx_dist_status      ON Distribution (Status, Pickup_Date_Time);
+CREATE INDEX idx_donation_date    ON Donation (Date_Time);
+CREATE INDEX idx_donation_donor   ON Donation (Donor_ID, Date_Time);
+CREATE INDEX idx_expiry_date      ON Expiry_Record (Expired_On);
+CREATE INDEX idx_recipient_name   ON Recipient (Name);
+CREATE INDEX idx_alert_lookup     ON Alert (Type, Item_ID, Date_Time);
+CREATE INDEX idx_shift_start      ON Shift (Start_Time);
